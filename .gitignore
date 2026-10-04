@@ -1,0 +1,41 @@
+# PlatformIO and build output
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# Local IDE and OS state
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Secrets and local environment
+.env
+.env.*
+*.secret
+*credentials*
+*secret*
+wifi_credentials*
+*.pem
+*.key
+*.pfx
+*.p12
+*.ovpn
+
+# Runtime LAN inventory, captures, and generated logs
+data/inventory/
+data/scans/
+data/captures/
+*.pcap
+*.pcapng
+*.cap
+scan-*.json
+scan-*.csv
+scan-*.log
+lan-inventory*
+oui-cache*
+*.log
+build-*/
