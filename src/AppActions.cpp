@@ -142,6 +142,10 @@ void applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
       view.page = 0;
       if (view.showingHosts) {
         view.showingHosts = false;
+      } else if (view.resultsOpen) {
+        if (wifi != nullptr) {
+          call(wifi->closeResults, wifi->context);
+        }
       } else if (wifi != nullptr) {
         call(wifi->cancelPassword, wifi->context);
       }

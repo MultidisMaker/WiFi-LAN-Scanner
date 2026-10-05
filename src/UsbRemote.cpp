@@ -6,6 +6,7 @@
 #include "InventoryExport.h"
 #include "RemoteProtocol.h"
 #include "ScannerUi.h"
+#include "TouchBoard.h"
 
 namespace {
 
@@ -22,6 +23,11 @@ bool applyRemote(void* context, AppAction action, int rowOffset) {
     return false;
   }
   return gUi->applyRemote(action, rowOffset);
+}
+
+bool remoteRejectedBusy(void* context) {
+  (void)context;
+  return gUi != nullptr && gUi->remoteApplyWasBusy();
 }
 
 void loadRemoteState(void* context, AppState* out) {
@@ -60,6 +66,7 @@ bool remoteRow(void* context, int index, InventoryRow* out) {
 RemoteServices services() {
   RemoteServices value;
   value.apply = applyRemote;
+  value.rejectedBusy = remoteRejectedBusy;
   value.loadState = loadRemoteState;
   value.rowCount = remoteRows;
   value.rowAt = remoteRow;
@@ -85,7 +92,11 @@ bool usbRemoteStreaming() { return gSession.streaming; }
 void usbRemoteSubmitLine(const char* line) {
   char frame[576];
   const RemoteServices bound = services();
-  emit(remoteSubmit(&gSession, line, frame, static_cast<int>(sizeof(frame)), &bound), frame);
+  const int written = remoteSubmit(&gSession, line, frame, static_cast<int>(sizeof(frame)), &bound);
+  emit(written, frame);
+  if (written > 0 && strstr(frame, "\"op\":\"GOODBYE\"") != nullptr) {
+    Serial.printf("WLS touch ready=%d\n", deviceTouch().ready() ? 1 : 0);
+  }
 }
 
 void usbRemotePullOne() {

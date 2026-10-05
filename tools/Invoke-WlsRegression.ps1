@@ -89,7 +89,7 @@ function Get-TfMiddleLiveJson {
         $payload = [ordered]@{
             ssid = 'TFMiddle'
             psk = $plain
-            instructionId = 'MM-PenTest-A011'
+            instructionId = 'MM-PenTest-A012'
         }
         return ($payload | ConvertTo-Json -Compress)
     } finally {
@@ -294,9 +294,11 @@ try {
 
     $uploadHilLog = Join-Path $WorkDir 'hil-upload.log'
     $hilHashOk = $false
-    for ($try = 1; $try -le 2 -and -not $hilHashOk; $try++) {
+    for ($try = 1; $try -le 3 -and -not $hilHashOk; $try++) {
         if ($try -gt 1) {
+            Start-Sleep -Seconds 3
             Reset-KnownBoardUsb
+            Start-Sleep -Seconds 2
             $port = Get-IntendedPort
         }
         try {
@@ -406,6 +408,17 @@ try {
                 throw "Production boot check exit $LASTEXITCODE"
             }
             Write-Step 'PRODUCTION_RESTORED'
+            $remoteTranscript = Join-Path $WorkDir 'production-remote.txt'
+            & $python $serialTool --port $port --mode production-remote --transcript $remoteTranscript
+            if ($LASTEXITCODE -ne 0) {
+                Reset-KnownBoardUsb
+                $port = Get-IntendedPort
+                & $python $serialTool --port $port --mode production-remote --transcript $remoteTranscript
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw 'production USB remote proof failed'
+            }
+            Write-Step 'PRODUCTION_REMOTE=pass'
         } catch {
             $failed = $true
             Write-Step ("PRODUCTION_RESTORE_FAIL=" + $_.Exception.Message)

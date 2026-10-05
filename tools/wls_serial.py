@@ -170,14 +170,58 @@ def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
         if not any(('"ip":"%s"' % live_ip) in line for line in transcript[start:]):
             transcript.append("! remote-results-ip")
             return False, pending
-        actions = ("hosts", "back", "pause")
+        sequence = (
+            ("hosts", None),
+            ("row", '{"v":1,"op":"ACTION","name":"row","index":0}'),
+            ("back", None),
+            ("pause", None),
+        )
     else:
-        actions = ("start", "pause", "resume", "stop", "reset")
+        sequence = (
+            ("hosts", None),
+            ("next", None),
+            ("prev", None),
+            ("row", '{"v":1,"op":"ACTION","name":"row","index":0}'),
+            ("back", None),
+            ("start", None),
+            ("pause", None),
+            ("resume", None),
+            ("stop", None),
+            ("reset", None),
+        )
 
-    for name in actions:
+    def remote_action(name, body=None, face="pressed"):
+        nonlocal pending
+        start = len(transcript)
+        payload = body if body is not None else '{"v":1,"op":"ACTION","name":"%s"}' % name
         expected = '@R1 {"v":1,"op":"ACTION_RESULT","name":"%s","ok":1}' % name
-        if step('{"v":1,"op":"ACTION","name":"%s"}' % name, exact(expected), 4) is None:
+        if step(payload, exact(expected), 6) is None:
             transcript.append("! remote-action " + name)
+            return False
+        window = transcript[start:]
+        armed = "WLS ui ack arm control=%s face=%s ms=120" % (name, face)
+        skipped = "WLS ui ack skip action=%s" % name
+        fired = "WLS ui ack fire control=%s" % name
+        if armed in window:
+            got, pending = read_until(
+                port,
+                lambda line, fired=fired: line == fired,
+                2,
+                transcript,
+                secret=secret,
+                pending=pending,
+            )
+            if got != fired:
+                transcript.append("! remote-ack-fire " + name)
+                return False
+            return True
+        if skipped in window:
+            return True
+        transcript.append("! remote-ack-missing " + name)
+        return False
+
+    for name, body in sequence:
+        if not remote_action(name, body):
             return False, pending
 
     if live_ip is None:
@@ -346,6 +390,100 @@ def run_hil(port, transcript):
     return True
 
 
+def run_production_remote(port, transcript):
+    ready = wait_for(port, lambda line: line == "WLS ready discovery=local-arp", 12, transcript)
+    if ready is None or any("WLS-HIL" in line for line in transcript):
+        transcript.append("! production-remote-ready")
+        return False
+
+    def exact(expected):
+        return lambda line, expected=expected: line == expected
+
+    pending = b""
+
+    def step(body, predicate, timeout):
+        nonlocal pending
+        send_frame(port, body, transcript)
+        line, pending = read_until(port, predicate, timeout, transcript, pending=pending)
+        return line
+
+    if step('{"v":1,"op":"HELLO"}', exact('@R1 {"v":1,"op":"HELLO_ACK","ok":1,"link":"usb","support":1}'), 8) is None:
+        transcript.append("! production-hello")
+        return False
+
+    def state_home(line):
+        return line.startswith('@R1 {"v":1,"op":"STATE"') and '"screen":"home"' in line and "password" not in line.lower() and "psk" not in line.lower()
+
+    state = step('{"v":1,"op":"GET_STATE"}', state_home, 8)
+    if state is None:
+        state = step('{"v":1,"op":"GET_STATE"}', state_home, 8)
+    if state is None:
+        transcript.append("! production-state")
+        return False
+    if step('{"v":1,"op":"PING","id":7}', exact('@R1 {"v":1,"op":"PONG","id":7}'), 8) is None:
+        if step('{"v":1,"op":"PING","id":7}', exact('@R1 {"v":1,"op":"PONG","id":7}'), 8) is None:
+            transcript.append("! production-ping")
+            return False
+
+    start = len(transcript)
+    if step('{"v":1,"op":"ACTION","name":"find"}', exact('@R1 {"v":1,"op":"ACTION_RESULT","name":"find","ok":1}'), 6) is None:
+        transcript.append("! production-find")
+        return False
+    if "WLS ui ack arm control=find face=pressed ms=120" not in transcript[start:]:
+        transcript.append("! production-find-ack")
+        return False
+    fired, pending = read_until(port, lambda line: line == "WLS ui ack fire control=find", 4, transcript, pending=pending)
+    if fired is None:
+        transcript.append("! production-find-fire")
+        return False
+
+    deadline = time.time() + 25
+    saw_results = False
+    while time.time() < deadline and not saw_results:
+        remaining = deadline - time.time()
+        if remaining < 0.2:
+            break
+        line = step('{"v":1,"op":"GET_STATE"}', lambda item: item.startswith('@R1 {"v":1,"op":"STATE"'), remaining)
+        if line is None:
+            break
+        if '"screen":"results"' in line:
+            saw_results = True
+            break
+        if '"wifi":"failed"' in line:
+            transcript.append("! production-scan-failed")
+            return False
+        time.sleep(0.5)
+    if not saw_results:
+        transcript.append("! production-results-screen")
+        return False
+
+    start = len(transcript)
+    if step('{"v":1,"op":"ACTION","name":"back"}', exact('@R1 {"v":1,"op":"ACTION_RESULT","name":"back","ok":1}'), 6) is None:
+        transcript.append("! production-back")
+        return False
+    if "WLS ui ack arm control=back face=pressed ms=120" not in transcript[start:]:
+        transcript.append("! production-back-ack")
+        return False
+    fired, pending = read_until(port, lambda line: line == "WLS ui ack fire control=back", 4, transcript, pending=pending)
+    if fired is None:
+        transcript.append("! production-back-fire")
+        return False
+    home = step('{"v":1,"op":"GET_STATE"}', lambda line: line.startswith('@R1 {"v":1,"op":"STATE"') and '"screen":"home"' in line, 8)
+    if home is None:
+        home = step('{"v":1,"op":"GET_STATE"}', lambda line: line.startswith('@R1 {"v":1,"op":"STATE"') and '"screen":"home"' in line, 8)
+    if home is None:
+        transcript.append("! production-home")
+        return False
+    if step('{"v":1,"op":"GOODBYE"}', exact('@R1 {"v":1,"op":"GOODBYE","ok":1}'), 8) is None:
+        transcript.append("! production-goodbye")
+        return False
+    touch, _pending = read_until(port, lambda line: line == "WLS touch ready=1", 8, transcript, pending=pending)
+    if touch is None or any("WLS-HIL" in line for line in transcript):
+        transcript.append("! production-touch")
+        return False
+    return True
+
+
 def run_boot(port, transcript):
     lines = read_lines(port, time.time() + 8, transcript)
     text = "\n".join(lines)
@@ -494,7 +632,7 @@ def run_live(port, transcript, from_stdin):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
-    parser.add_argument("--mode", choices=("hil", "boot", "live"), required=True)
+    parser.add_argument("--mode", choices=("hil", "boot", "live", "production-remote"), required=True)
     parser.add_argument("--transcript", required=True)
     parser.add_argument("--secret-stdin", action="store_true")
     args = parser.parse_args()
@@ -512,6 +650,8 @@ def main():
                     ok = run_hil(port, transcript)
             elif args.mode == "live":
                 ok = run_live(port, transcript, args.secret_stdin)
+            elif args.mode == "production-remote":
+                ok = run_production_remote(port, transcript)
             else:
                 ok = run_boot(port, transcript)
                 if not ok:

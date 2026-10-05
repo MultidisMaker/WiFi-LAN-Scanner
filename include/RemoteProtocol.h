@@ -26,6 +26,8 @@ struct RemoteSession {
 
 struct RemoteServices {
   bool (*apply)(void* context, AppAction action, int rowOffset) = nullptr;
+  // Read only after apply returns false. True means the press ack is still showing.
+  bool (*rejectedBusy)(void* context) = nullptr;
   void (*loadState)(void* context, AppState* out) = nullptr;
   int (*rowCount)(void* context) = nullptr;
   bool (*rowAt)(void* context, int index, InventoryRow* out) = nullptr;

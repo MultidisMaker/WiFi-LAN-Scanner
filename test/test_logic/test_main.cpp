@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ActionAck.h"
 #include "AppActions.h"
 #include "BoardConfig.h"
 #include "CandidatePlan.h"
@@ -1554,6 +1555,179 @@ void test_remote_result_rows(void) {
   TEST_ASSERT_FALSE(session.streaming);
 }
 
+struct NavTrace {
+  int finds;
+  int closes;
+  int cancels;
+  const char* phase;
+};
+
+static void navFind(void* context) {
+  auto* nav = static_cast<NavTrace*>(context);
+  nav->finds++;
+  nav->phase = "results";
+}
+
+static void navClose(void* context) {
+  auto* nav = static_cast<NavTrace*>(context);
+  nav->closes++;
+  nav->phase = "home";
+}
+
+static void navCancel(void* context) {
+  auto* nav = static_cast<NavTrace*>(context);
+  nav->cancels++;
+  nav->phase = "results";
+}
+
+void test_networks_back_returns_home(void) {
+  NavTrace nav{0, 0, 0, "home"};
+  AppHooks hooks;
+  hooks.findNetworks = navFind;
+  hooks.closeResults = navClose;
+  hooks.cancelPassword = navCancel;
+  hooks.context = &nav;
+  gScanNow = 12000;
+  ScannerController touch;
+  ScannerController direct;
+  FakeDiscoveryBackend touchBackend;
+  FakeDiscoveryBackend directBackend;
+  armReady(touch, touchBackend, lan24(), 60000);
+  armReady(direct, directBackend, lan24(), 60000);
+  AppView touchView;
+  AppView directView;
+
+  act(touch, touchView, true, IdFind, AppAction::FindNetworks, &hooks);
+  TEST_ASSERT_TRUE(nav.finds == 1);
+  TEST_ASSERT_TRUE(strcmp(nav.phase, "results") == 0);
+  touchView.resultsOpen = true;
+  touchView.page = 2;
+  act(touch, touchView, true, IdBack, AppAction::Back, &hooks);
+  TEST_ASSERT_TRUE(nav.closes == 1 && nav.cancels == 0);
+  TEST_ASSERT_TRUE(strcmp(nav.phase, "home") == 0);
+  TEST_ASSERT_TRUE(touchView.page == 0 && !touchView.showingHosts);
+
+  nav.phase = "results";
+  directView.resultsOpen = true;
+  directView.page = 1;
+  act(direct, directView, false, IdBack, AppAction::Back, &hooks);
+  TEST_ASSERT_TRUE(nav.closes == 2 && nav.cancels == 0);
+  TEST_ASSERT_TRUE(strcmp(nav.phase, "home") == 0);
+  TEST_ASSERT_TRUE(directView.page == 0);
+
+  AppView hosts;
+  hosts.showingHosts = true;
+  hosts.page = 1;
+  act(touch, hosts, true, IdBack, AppAction::Back, &hooks);
+  TEST_ASSERT_TRUE(!hosts.showingHosts && hosts.page == 0);
+  TEST_ASSERT_TRUE(nav.closes == 2 && nav.cancels == 0);
+
+  AppView entry;
+  act(touch, entry, false, IdBack, AppAction::Back, &hooks);
+  TEST_ASSERT_TRUE(nav.cancels == 1 && nav.closes == 2);
+
+  touchView.resultsOpen = false;
+  act(touch, touchView, true, IdFind, AppAction::FindNetworks, &hooks);
+  TEST_ASSERT_TRUE(nav.finds == 2);
+  TEST_ASSERT_TRUE(strcmp(nav.phase, "results") == 0);
+}
+
+void test_remote_visual_ack_matches_touch_face(void) {
+  UiControl controls[16];
+  UiSnapshot home;
+  home.phase = UiPhase::Home;
+  home.showDashboard = true;
+  int count = collectUiControls(controls, 16, home);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::FindNetworks, -1, controls, count) == IdFind);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::Back, -1, controls, count) == -1);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::StartScan, -1, controls, count) == IdStart);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::PauseScan, -1, controls, count) == IdPause);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::ResumeScan, -1, controls, count) == IdResume);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::StopScan, -1, controls, count) == IdStop);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::ResetScan, -1, controls, count) == IdReset);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::OpenHosts, -1, controls, count) == IdHosts);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::NextPage, -1, controls, count) == -1);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::PrevPage, -1, controls, count) == -1);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::SelectRow, 0, controls, count) == -1);
+
+  UiSnapshot networks;
+  networks.phase = UiPhase::Results;
+  networks.rowPresent[0] = true;
+  snprintf(networks.rowLabel[0], sizeof(networks.rowLabel[0]), "Office");
+  count = collectUiControls(controls, 16, networks);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::Back, -1, controls, count) == IdBack);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::FindNetworks, -1, controls, count) == -1);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::NextPage, -1, controls, count) == IdNext);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::PrevPage, -1, controls, count) == IdPrev);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::SelectRow, 0, controls, count) == IdRow0);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::SelectRow, 1, controls, count) == -1);
+
+  UiSnapshot hosts;
+  hosts.phase = UiPhase::Hosts;
+  hosts.rowPresent[0] = true;
+  snprintf(hosts.rowLabel[0], sizeof(hosts.rowLabel[0]), "10.0.0.1");
+  count = collectUiControls(controls, 16, hosts);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::Back, -1, controls, count) == IdBack);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::SelectRow, 0, controls, count) == IdRow0);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::FindNetworks, -1, controls, count) == -1);
+
+  ActionAck ack;
+  TEST_ASSERT_TRUE(ack.arm(IdFind, 1000));
+  TEST_ASSERT_TRUE(ack.pending() && ack.shownId() == IdFind);
+  TEST_ASSERT_TRUE(!ack.arm(IdBack, 1010));
+  TEST_ASSERT_TRUE(ack.shownId() == IdFind);
+  TEST_ASSERT_TRUE(!ack.consume(1119));
+  TEST_ASSERT_TRUE(ack.pending());
+  TEST_ASSERT_TRUE(ack.consume(1120));
+  TEST_ASSERT_TRUE(!ack.pending());
+  TEST_ASSERT_TRUE(!ack.consume(1120));
+  TEST_ASSERT_TRUE(ack.arm(IdBack, 2000));
+  TEST_ASSERT_TRUE(ack.consume(2120));
+  TEST_ASSERT_TRUE(ActionAck::kAckMs == PressTracker::kAckMs);
+  TEST_ASSERT_TRUE(ActionAck::kAckMs == 120);
+  TEST_ASSERT_TRUE(controlFace(false, true) == ControlFace::Pressed);
+  TEST_ASSERT_EQUAL_STRING("pressed", faceToken(controlFace(false, true)));
+  TEST_ASSERT_EQUAL_STRING("latchedpressed", faceToken(controlFace(true, true)));
+}
+
+static bool gRejectBusy = false;
+static int gBusyApplies = 0;
+
+static bool busyApply(void* context, AppAction action, int rowOffset) {
+  (void)context;
+  (void)action;
+  (void)rowOffset;
+  gBusyApplies++;
+  return !gRejectBusy;
+}
+
+static bool busyQuery(void* context) {
+  (void)context;
+  return gRejectBusy;
+}
+
+void test_remote_action_busy_result(void) {
+  RemoteServices services;
+  services.apply = busyApply;
+  services.rejectedBusy = busyQuery;
+  RemoteSession session;
+  char out[160];
+  gRejectBusy = false;
+  gBusyApplies = 0;
+  int n = remoteSubmit(&session, "@R1 {\"v\":1,\"op\":\"HELLO\"}", out, static_cast<int>(sizeof(out)), &services);
+  TEST_ASSERT_TRUE(n > 0);
+  n = remoteSubmit(&session, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"find\"}", out, static_cast<int>(sizeof(out)),
+                   &services);
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"find\",\"ok\":1}\n", out);
+  TEST_ASSERT_TRUE(gBusyApplies == 1);
+  gRejectBusy = true;
+  n = remoteSubmit(&session, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"back\"}", out, static_cast<int>(sizeof(out)),
+                   &services);
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"back\",\"ok\":0,\"reason\":\"busy\"}\n", out);
+  TEST_ASSERT_TRUE(gBusyApplies == 2);
+  TEST_ASSERT_TRUE(session.link == RemoteLink::ConnectedUsb);
+}
+
 void test_resource_line_injected(void) {
   ResourceSample sample;
   sample.heap = 1000;
@@ -1609,6 +1783,9 @@ void setup() {
   RUN_TEST(test_remote_session_and_state);
   RUN_TEST(test_remote_touch_parity);
   RUN_TEST(test_remote_result_rows);
+  RUN_TEST(test_networks_back_returns_home);
+  RUN_TEST(test_remote_visual_ack_matches_touch_face);
+  RUN_TEST(test_remote_action_busy_result);
   RUN_TEST(test_resource_line_injected);
   gFailures = UNITY_END();
 }

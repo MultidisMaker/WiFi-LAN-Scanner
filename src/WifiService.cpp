@@ -187,6 +187,22 @@ void WifiService::cancelPassword() {
   setStatus(phase_ == WifiPhase::Results ? "Select a network" : "No saved network");
 }
 
+void WifiService::closeResults() {
+  if (phase_ == WifiPhase::Scanning) {
+    WiFi.scanDelete();
+  }
+  resultCount_ = 0;
+  selectedSsid_[0] = '\0';
+  password_.clear();
+  if (WiFi.status() == WL_CONNECTED) {
+    phase_ = WifiPhase::Connected;
+    setStatus("Connected");
+  } else {
+    phase_ = WifiPhase::Idle;
+    setStatus(saved_ ? "Saved network ready" : "No saved network");
+  }
+}
+
 bool WifiService::shiftOn() const { return password_.shiftOn(); }
 
 void WifiService::toggleShift() { password_.toggleShift(); }

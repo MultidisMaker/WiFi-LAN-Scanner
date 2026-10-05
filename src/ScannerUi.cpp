@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ActionAck.h"
 #include "AppActions.h"
 #include "BoardConfig.h"
 #include "DisplayBoard.h"
@@ -34,6 +35,8 @@ void hookBackspace(void* context) { wifiFrom(context)->backspace(); }
 void hookSubmit(void* context) { wifiFrom(context)->submitPassword(); }
 
 void hookCancel(void* context) { wifiFrom(context)->cancelPassword(); }
+
+void hookClose(void* context) { wifiFrom(context)->closeResults(); }
 
 const char* phaseToken(WifiPhase phase) {
   switch (phase) {
@@ -309,7 +312,7 @@ void ScannerUi::paintControls() {
   UiControl* controls = uiScratchControls(&cap);
   const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
   Arduino_GFX& gfx = deviceDisplay().panel();
-  const int shown = press_.shownId();
+  const int shown = remoteAck_.pending() ? remoteAck_.shownId() : press_.shownId();
   for (int i = 0; i < count; ++i) {
     paintControl(gfx, controls[i], controls[i].id == shown);
   }
@@ -369,11 +372,8 @@ void ScannerUi::dispatch(int id) {
   applyRemote(action, row);
 }
 
-bool ScannerUi::applyRemote(AppAction action, int rowOffset) {
+bool ScannerUi::executeRemote(AppAction action, int rowOffset) {
   if (wifi_ == nullptr || scanner_ == nullptr || action == AppAction::None) {
-    return false;
-  }
-  if (action == AppAction::SelectRow && (rowOffset < 0 || rowOffset > 5)) {
     return false;
   }
   AppView view;
@@ -392,6 +392,7 @@ bool ScannerUi::applyRemote(AppAction action, int rowOffset) {
   hooks.backspace = hookBackspace;
   hooks.submitPassword = hookSubmit;
   hooks.cancelPassword = hookCancel;
+  hooks.closeResults = hookClose;
   hooks.context = wifi_;
   applyAppAction(action, view, *scanner_, &hooks);
   showingHosts_ = view.showingHosts;
@@ -399,6 +400,64 @@ bool ScannerUi::applyRemote(AppAction action, int rowOffset) {
   keyboardPage_ = view.keyboardPage;
   force_ = true;
   return true;
+}
+
+void ScannerUi::serviceRemoteAck(uint32_t nowMs) {
+  if (!remoteAck_.pending()) {
+    return;
+  }
+  const int shown = remoteAck_.shownId();
+  if (!remoteAck_.consume(nowMs)) {
+    return;
+  }
+  const AppAction action = pendingAction_;
+  pendingAction_ = AppAction::None;
+  const int row = pendingRow_;
+  pendingRow_ = -1;
+  Serial.printf("WLS ui ack fire control=%s\n", uiControlName(shown));
+  executeRemote(action, row);
+}
+
+bool ScannerUi::applyRemote(AppAction action, int rowOffset) {
+  remoteBusy_ = false;
+  if (wifi_ == nullptr || scanner_ == nullptr || action == AppAction::None) {
+    return false;
+  }
+  if (action == AppAction::SelectRow && (rowOffset < 0 || rowOffset > 5)) {
+    return false;
+  }
+  if (remoteAck_.pending()) {
+    remoteBusy_ = true;
+    return false;
+  }
+  int cap = 0;
+  UiControl* controls = uiScratchControls(&cap);
+  const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
+  const int id = visibleControlForAction(action, rowOffset, controls, count);
+  if (id >= 0) {
+    bool latched = false;
+    for (int i = 0; i < count; ++i) {
+      if (controls[i].id == id) {
+        latched = controls[i].latched;
+        break;
+      }
+    }
+    pendingAction_ = action;
+    pendingRow_ = rowOffset;
+    if (!remoteAck_.arm(id, millis())) {
+      pendingAction_ = AppAction::None;
+      pendingRow_ = -1;
+      remoteBusy_ = true;
+      return false;
+    }
+    const ControlFace face = controlFace(latched, true);
+    Serial.printf("WLS ui ack arm control=%s face=%s ms=%lu\n", uiControlName(id), faceToken(face),
+                  static_cast<unsigned long>(ActionAck::kAckMs));
+    paintControls();
+    return true;
+  }
+  Serial.printf("WLS ui ack skip action=%s\n", actionToken(action));
+  return executeRemote(action, rowOffset);
 }
 
 void ScannerUi::captureState(AppState& out) const {
@@ -422,6 +481,10 @@ void ScannerUi::captureState(AppState& out) const {
   wifi.entry = wifi_->phase() == WifiPhase::Password;
   wifi.results = wifi_->phase() == WifiPhase::Results;
   fillAppState(out, view, *scanner_, wifi);
+  out.ack[0] = '\0';
+  if (remoteAck_.pending()) {
+    snprintf(out.ack, sizeof(out.ack), "%s", uiControlName(remoteAck_.shownId()));
+  }
 }
 
 void ScannerUi::noteTouch(const char* event, int id, int x, int y, bool includePoint) {
@@ -441,6 +504,7 @@ void ScannerUi::loop() {
   if (wifi_ == nullptr || scanner_ == nullptr) {
     return;
   }
+  serviceRemoteAck(millis());
   bool down = false;
   int x = 0;
   int y = 0;

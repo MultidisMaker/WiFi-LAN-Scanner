@@ -34,6 +34,8 @@ class WifiService {
   void requestScan();
   void selectResult(int index);
   void cancelPassword();
+  // Leave the Networks list and return to Home. Does not erase saved Wi-Fi.
+  void closeResults();
   bool shiftOn() const;
   void toggleShift();
   void typeChar(char c);

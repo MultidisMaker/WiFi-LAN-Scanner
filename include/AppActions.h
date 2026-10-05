@@ -48,6 +48,7 @@ struct AppHooks {
   void (*backspace)(void* context) = nullptr;
   void (*submitPassword)(void* context) = nullptr;
   void (*cancelPassword)(void* context) = nullptr;
+  void (*closeResults)(void* context) = nullptr;
   void* context = nullptr;
 };
 
@@ -80,6 +81,8 @@ struct AppState {
   bool canStart = false;
   bool canPause = false;
   bool canResume = false;
+  // Control name while a Remote press is showing. Empty when none is showing.
+  char ack[12] = {};
 };
 
 // Row ids 200..205 become SelectRow. Other known controls map to one action.

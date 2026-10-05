@@ -343,7 +343,9 @@ int writeState(char* out, int outCap, const AppState& state) {
   addInt(buf, state.canPause ? 1 : 0);
   addRaw(buf, ",\"canResume\":");
   addInt(buf, state.canResume ? 1 : 0);
-  addRaw(buf, "}");
+  addRaw(buf, ",\"ack\":\"");
+  addEsc(buf, state.ack);
+  addRaw(buf, "\"}");
   if (!buf.ok) {
     return writeErr(out, outCap, "state");
   }
@@ -492,8 +494,14 @@ int remoteSubmit(RemoteSession* session, const char* line, char* out, int outCap
     }
     if (services == nullptr || services->apply == nullptr ||
         !services->apply(services->context, named->action, named->row ? index : -1)) {
-      char body[80];
-      snprintf(body, sizeof(body), "{\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"%s\",\"ok\":0}", name);
+      const bool busy = services != nullptr && services->rejectedBusy != nullptr &&
+                        services->rejectedBusy(services->context);
+      char body[96];
+      if (busy) {
+        snprintf(body, sizeof(body), "{\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"%s\",\"ok\":0,\"reason\":\"busy\"}", name);
+      } else {
+        snprintf(body, sizeof(body), "{\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"%s\",\"ok\":0}", name);
+      }
       return finishFrame(out, outCap, body);
     }
     char body[80];
