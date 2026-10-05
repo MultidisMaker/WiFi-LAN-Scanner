@@ -8,39 +8,9 @@
 #include "DisplayBoard.h"
 #include "NetworkRange.h"
 #include "TouchBoard.h"
+#include "UiModel.h"
 
 namespace {
-
-enum ControlId : int {
-  IdFind = 1,
-  IdForget,
-  IdStart,
-  IdPause,
-  IdResume,
-  IdStop,
-  IdRow0,
-  IdPrev,
-  IdNext,
-  IdBack,
-  IdShift,
-  IdPage,
-  IdDel,
-  IdOk,
-  IdClose,
-  IdKeyBase = 100
-};
-
-struct UiControl {
-  int id;
-  int x;
-  int y;
-  int w;
-  int h;
-  char label[22];
-  char detail[22];
-  char value;
-  bool latched;
-};
 
 void copyLabel(char* dest, size_t destLen, const char* text) {
   if (destLen == 0) {
@@ -64,124 +34,36 @@ void textLine(Arduino_GFX& gfx, int x, int y, int size, uint16_t color, const ch
 
 const char* securityLabel(bool secure) { return secure ? "SEC" : "OPEN"; }
 
-const char* controlName(int id) {
-  switch (id) {
-    case IdFind:
-      return "find";
-    case IdForget:
-      return "forget";
-    case IdStart:
-      return "start";
-    case IdPause:
-      return "pause";
-    case IdResume:
-      return "resume";
-    case IdStop:
-      return "stop";
-    case IdPrev:
-      return "prev";
-    case IdNext:
-      return "next";
-    case IdBack:
-      return "back";
-    case IdShift:
-      return "shift";
-    case IdPage:
-      return "page";
-    case IdDel:
-      return "del";
-    case IdOk:
-      return "ok";
-    case IdClose:
-      return "close";
-    default:
-      if (id >= IdRow0 && id < IdRow0 + 6) {
-        return "row";
-      }
-      if (id >= IdKeyBase) {
-        return "key";
-      }
-      return "none";
-  }
-}
-
-int appendControl(UiControl* out, int count, int cap, int id, int x, int y, int w, int h, const char* label,
-                  const char* detail, char value, bool latched) {
-  if (count >= cap) {
-    return count;
-  }
-  UiControl& control = out[count];
-  control.id = id;
-  control.x = x;
-  control.y = y;
-  control.w = w;
-  control.h = h;
-  copyLabel(control.label, sizeof(control.label), label);
-  copyLabel(control.detail, sizeof(control.detail), detail);
-  control.value = value;
-  control.latched = latched;
-  return count + 1;
-}
-
-const char* keyboardRows(int page, int row) {
-  static const char* pages[2][5] = {
-      {"abcdef", "ghijkl", "mnopqr", "stuvw", "xyz"},
-      {"012345", "6789", "-_@.", "/", ""},
-  };
-  return pages[page & 1][row];
-}
-
-int collectControls(UiControl* out, int cap, WifiPhase phase, bool saved, bool shift, int keyboardPage, int page,
-                    int resultCount, ScanState scan, const WifiService& wifi) {
-  int count = 0;
+int gatherControls(UiControl* out, int cap, const WifiService& wifi, const ScannerController& scanner, int page,
+                   int keyboardPage) {
+  UiSnapshot snapshot;
+  const WifiPhase phase = wifi.phase();
   if (phase == WifiPhase::Results) {
-    const int pageSize = 6;
-    const int start = page * pageSize;
-    for (int row = 0; row < pageSize; ++row) {
+    snapshot.phase = UiPhase::Results;
+  } else if (phase == WifiPhase::Password) {
+    snapshot.phase = UiPhase::Password;
+  } else {
+    snapshot.phase = UiPhase::Home;
+  }
+  snapshot.saved = wifi.hasSavedNetwork();
+  snapshot.shift = wifi.shiftOn();
+  snapshot.keyboardPage = keyboardPage;
+  snapshot.listPage = page;
+  snapshot.scan = scanner.state();
+  if (snapshot.phase == UiPhase::Results) {
+    const int start = page * 6;
+    for (int row = 0; row < 6; ++row) {
       const WifiAp* ap = wifi.resultAt(start + row);
       if (ap == nullptr) {
         continue;
       }
-      char detail[22];
-      snprintf(detail, sizeof(detail), "%s %ld dBm", securityLabel(ap->secure), static_cast<long>(ap->rssi));
-      count = appendControl(out, count, cap, IdRow0 + row, 6, 40 + row * 52, 210, 48, ap->ssid, detail, 0, false);
+      snapshot.rowPresent[row] = true;
+      copyLabel(snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]), ap->ssid);
+      snprintf(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), "%s %ld dBm", securityLabel(ap->secure),
+               static_cast<long>(ap->rssi));
     }
-    count = appendControl(out, count, cap, IdPrev, 6, 430, 64, 40, "Prev", nullptr, 0, false);
-    count = appendControl(out, count, cap, IdNext, 76, 430, 64, 40, "Next", nullptr, 0, false);
-    count = appendControl(out, count, cap, IdBack, 146, 430, 70, 40, "Back", nullptr, 0, false);
-    return count;
   }
-
-  if (phase == WifiPhase::Password) {
-    int keyIndex = 0;
-    for (int row = 0; row < 5; ++row) {
-      const char* keys = keyboardRows(keyboardPage, row);
-      for (int col = 0; keys[col] != '\0'; ++col, ++keyIndex) {
-        const char glyph = keyGlyph(keys[col], shift);
-        char label[2] = {glyph, '\0'};
-        count = appendControl(out, count, cap, IdKeyBase + keyIndex, 6 + col * 36, 96 + row * 46, 34, 42, label,
-                              nullptr, glyph, false);
-      }
-    }
-    count = appendControl(out, count, cap, IdShift, 6, 430, 50, 40, shift ? "SHIFT" : "shift", nullptr, 0, shift);
-    count = appendControl(out, count, cap, IdPage, 60, 430, 40, 40, "Pg", nullptr, 0, false);
-    count = appendControl(out, count, cap, IdDel, 104, 430, 36, 40, "Del", nullptr, 0, false);
-    count = appendControl(out, count, cap, IdOk, 144, 430, 34, 40, "OK", nullptr, 0, false);
-    count = appendControl(out, count, cap, IdClose, 182, 430, 34, 40, "X", nullptr, 0, false);
-    return count;
-  }
-
-  count = appendControl(out, count, cap, IdFind, 8, 72, 206, 34, "Find networks", nullptr, 0, false);
-  if (saved) {
-    count = appendControl(out, count, cap, IdForget, 8, 112, 206, 34, "Forget network", nullptr, 0, false);
-  }
-  count = appendControl(out, count, cap, IdStart, 8, 328, 100, 40, scan == ScanState::Complete ? "Reset" : "Start",
-                        nullptr, 0, false);
-  count = appendControl(out, count, cap, IdPause, 114, 328, 100, 40, "Pause", nullptr, 0, false);
-  count = appendControl(out, count, cap, IdResume, 8, 376, 100, 40, "Resume", nullptr, 0, false);
-  count = appendControl(out, count, cap, IdStop, 114, 376, 100, 40, "Stop", nullptr, 0, false);
-  (void)resultCount;
-  return count;
+  return collectUiControls(out, cap, snapshot);
 }
 
 void paintControl(Arduino_GFX& gfx, const UiControl& control, bool pressed) {
@@ -305,8 +187,7 @@ void ScannerUi::paintControls() {
     return;
   }
   UiControl controls[40];
-  const int count = collectControls(controls, 40, wifi_->phase(), wifi_->hasSavedNetwork(), wifi_->shiftOn(),
-                                    keyboardPage_, page_, wifi_->resultCount(), scanner_->state(), *wifi_);
+  const int count = gatherControls(controls, 40, *wifi_, *scanner_, page_, keyboardPage_);
   Arduino_GFX& gfx = deviceDisplay().panel();
   const int shown = press_.shownId();
   for (int i = 0; i < count; ++i) {
@@ -336,22 +217,14 @@ void ScannerUi::draw(bool full) {
 
 int ScannerUi::hitControl(int x, int y) const {
   UiControl controls[40];
-  const int count = collectControls(controls, 40, wifi_->phase(), wifi_->hasSavedNetwork(), wifi_->shiftOn(),
-                                    keyboardPage_, page_, wifi_->resultCount(), scanner_->state(), *wifi_);
-  for (int i = 0; i < count; ++i) {
-    const UiControl& control = controls[i];
-    if (x >= control.x && x < control.x + control.w && y >= control.y && y < control.y + control.h) {
-      return control.id;
-    }
-  }
-  return -1;
+  const int count = gatherControls(controls, 40, *wifi_, *scanner_, page_, keyboardPage_);
+  return hitUiControl(controls, count, x, y);
 }
 
 void ScannerUi::dispatch(int id) {
   if (id >= IdKeyBase) {
     UiControl controls[40];
-    const int count = collectControls(controls, 40, wifi_->phase(), wifi_->hasSavedNetwork(), wifi_->shiftOn(),
-                                      keyboardPage_, page_, wifi_->resultCount(), scanner_->state(), *wifi_);
+    const int count = gatherControls(controls, 40, *wifi_, *scanner_, page_, keyboardPage_);
     for (int i = 0; i < count; ++i) {
       if (controls[i].id == id && controls[i].value != 0) {
         wifi_->typeChar(controls[i].value);
@@ -431,9 +304,9 @@ void ScannerUi::noteTouch(const char* event, int id, int x, int y, bool includeP
     return;
   }
   if (includePoint) {
-    Serial.printf("WLS touch %s control=%s x=%d y=%d\n", event, controlName(id), x, y);
+    Serial.printf("WLS touch %s control=%s x=%d y=%d\n", event, uiControlName(id), x, y);
   } else {
-    Serial.printf("WLS touch %s control=%s\n", event, controlName(id));
+    Serial.printf("WLS touch %s control=%s\n", event, uiControlName(id));
   }
 }
 

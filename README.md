@@ -30,6 +30,15 @@ Upload only after the connected USB device has been identified as the intended T
 pio run -e lilygo-t-display-s3-pro -t upload --upload-port COMx
 ```
 
+## Automated tests
+
+Host-native regression and the USB serial hardware-in-the-loop path are documented in `docs/testing.md`.
+
+```text
+powershell -NoProfile -File tools\Invoke-WlsHostTests.ps1
+powershell -NoProfile -File tools\Invoke-WlsRegression.ps1
+```
+
 ## Layout
 
 `src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` remain the project skeleton. Discovery, enrichment, and inventory persistence are still deferred.

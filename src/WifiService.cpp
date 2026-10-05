@@ -2,6 +2,7 @@
 
 #include <Preferences.h>
 #include <WiFi.h>
+#include <string.h>
 
 namespace {
 void copyText(char* dest, size_t destLen, const char* src) {
@@ -68,8 +69,7 @@ void WifiService::clearSaved() {
   prefs.end();
   memset(savedSsid_, 0, sizeof(savedSsid_));
   memset(savedPsk_, 0, sizeof(savedPsk_));
-  memset(typedPsk_, 0, sizeof(typedPsk_));
-  passwordLength_ = 0;
+  password_.clear();
   saved_ = false;
 }
 
@@ -169,9 +169,8 @@ void WifiService::selectResult(int index) {
   }
   copyText(selectedSsid_, sizeof(selectedSsid_), ap->ssid);
   selectedSecure_ = ap->secure;
-  memset(typedPsk_, 0, sizeof(typedPsk_));
-  passwordLength_ = 0;
-  shift_ = false;
+  password_.clear();
+  password_.setShift(false);
   if (!selectedSecure_) {
     storeSaved(selectedSsid_, "");
     beginConnect(selectedSsid_, "");
@@ -183,57 +182,29 @@ void WifiService::selectResult(int index) {
 }
 
 void WifiService::cancelPassword() {
-  memset(typedPsk_, 0, sizeof(typedPsk_));
-  passwordLength_ = 0;
+  password_.clear();
   phase_ = resultCount_ > 0 ? WifiPhase::Results : WifiPhase::Idle;
   setStatus(phase_ == WifiPhase::Results ? "Select a network" : "No saved network");
 }
 
-bool WifiService::shiftOn() const { return shift_; }
+bool WifiService::shiftOn() const { return password_.shiftOn(); }
 
-void WifiService::toggleShift() { shift_ = !shift_; }
+void WifiService::toggleShift() { password_.toggleShift(); }
 
-void WifiService::typeChar(char c) {
-  if (passwordLength_ >= kMaxPassLen) {
-    return;
-  }
-  typedPsk_[passwordLength_++] = c;
-  typedPsk_[passwordLength_] = '\0';
-}
+void WifiService::typeChar(char c) { password_.typeChar(c); }
 
-void WifiService::backspace() {
-  if (passwordLength_ <= 0) {
-    return;
-  }
-  typedPsk_[--passwordLength_] = '\0';
-}
+void WifiService::backspace() { password_.backspace(); }
 
-int WifiService::passwordLength() const { return passwordLength_; }
+int WifiService::passwordLength() const { return password_.length(); }
 
 void WifiService::submitPassword() {
-  storeSaved(selectedSsid_, typedPsk_);
-  beginConnect(selectedSsid_, typedPsk_);
+  storeSaved(selectedSsid_, password_.data());
+  beginConnect(selectedSsid_, password_.data());
   setStatus("Connecting");
-  memset(typedPsk_, 0, sizeof(typedPsk_));
-  passwordLength_ = 0;
+  password_.clear();
 }
 
-bool WifiService::maskingSelfTest() {
-  if (passwordLength_ != 0 || shift_ || typedPsk_[0] != '\0') {
-    return false;
-  }
-  typeChar('a');
-  const bool typed = passwordLength_ == 1 && typedPsk_[0] == 'a' && typedPsk_[1] == '\0';
-  toggleShift();
-  const bool preserved = typed && shift_ && passwordLength_ == 1 && typedPsk_[0] == 'a';
-  toggleShift();
-  const bool restored = preserved && !shift_ && typedPsk_[0] == 'a';
-  backspace();
-  memset(typedPsk_, 0, sizeof(typedPsk_));
-  passwordLength_ = 0;
-  shift_ = false;
-  return restored && passwordLength_ == 0 && typedPsk_[0] == '\0';
-}
+bool WifiService::maskingSelfTest() { return password_.preservedAcrossShift(); }
 
 void WifiService::forget() {
   clearSaved();

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 // Display mapping provenance, copied from the installed vendor example and not invented:
 // GFX Library for Arduino 1.4.6
 // C:\Users\LelandJohnson\Documents\Arduino\libraries\GFX_Library_for_Arduino\examples\PDQgraphicstest\Arduino_GFX_dev_device.h
@@ -42,3 +44,8 @@ static constexpr unsigned long kWifiConnectTimeoutMs = 20000;
 static constexpr int kMaxScanResults = 12;
 static constexpr int kMaxSsidLen = 32;
 static constexpr int kMaxPassLen = 63;
+
+// Production builds leave this at 0. The explicit HIL environment sets it to 1.
+#ifndef WLS_TEST_MODE
+#define WLS_TEST_MODE 0
+#endif

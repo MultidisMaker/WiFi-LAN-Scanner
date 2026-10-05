@@ -1,6 +1,11 @@
 #include "ScannerController.h"
 
 #include "BoardConfig.h"
+#include "ScanClock.h"
+
+#ifdef ARDUINO
+#include <Arduino.h>
+#endif
 
 const char* scanStateName(ScanState state) {
   switch (state) {
@@ -22,7 +27,7 @@ const char* scanStateName(ScanState state) {
 
 void ScannerController::enter(ScanState next) {
   state_ = next;
-  enteredMs_ = millis();
+  enteredMs_ = scanNow();
 }
 
 ScanState ScannerController::state() const { return state_; }
@@ -58,7 +63,7 @@ void ScannerController::acknowledge() {
 }
 
 void ScannerController::loop() {
-  const unsigned long elapsed = millis() - enteredMs_;
+  const uint32_t elapsed = scanNow() - enteredMs_;
   if (state_ == ScanState::Starting && elapsed >= kScannerTransitionMs) {
     enter(ScanState::Scanning);
   } else if (state_ == ScanState::Stopping && elapsed >= kScannerTransitionMs) {
@@ -69,7 +74,7 @@ void ScannerController::loop() {
 bool ScannerController::selfTest() {
   start();
   bool ok = state_ == ScanState::Starting;
-  enteredMs_ = millis() - kScannerTransitionMs;
+  enteredMs_ = scanNow() - static_cast<uint32_t>(kScannerTransitionMs);
   loop();
   ok = ok && state_ == ScanState::Scanning;
   pause();
@@ -78,11 +83,13 @@ bool ScannerController::selfTest() {
   ok = ok && state_ == ScanState::Scanning;
   stop();
   ok = ok && state_ == ScanState::Stopping;
-  enteredMs_ = millis() - kScannerTransitionMs;
+  enteredMs_ = scanNow() - static_cast<uint32_t>(kScannerTransitionMs);
   loop();
   ok = ok && state_ == ScanState::Complete;
   acknowledge();
   ok = ok && state_ == ScanState::Idle;
+#ifdef ARDUINO
   Serial.printf("WLS scanner-selftest=%s discovery=deferred\n", ok ? "ok" : "fail");
+#endif
   return ok;
 }

@@ -26,7 +26,7 @@ Saved credentials go to ESP32 Preferences namespace `wlan` under keys `ssid` and
 
 ## Network characterization
 
-`src/NetworkRange.cpp` reads the station IPv4 address, subnet mask, gateway, and DNS servers from the Arduino-ESP32 `WiFi` object. The network address and prefix come from the address AND the mask. Usable host count is `2^(32-prefix) - 2` for a contiguous prefix from 1 through 30. The code does not assume `/24`.
+`src/NetworkRange.cpp` reads the station IPv4 address, subnet mask, gateway, and DNS servers from the Arduino-ESP32 `WiFi` object and passes them to `deriveNetFacts` in `src/NetMath.cpp`. That shared arithmetic is what host tests exercise. The network address and prefix come from the address AND the mask. Usable host count is `2^(32-prefix) - 2` for a contiguous prefix from 1 through 30. The code does not assume `/24`.
 
 A non-contiguous mask, or a prefix outside 1..30, is reported as an unavailable range. A future discovery pass may examine at most 256 usable hosts (`kFutureScanHostCap`), even if the subnet is larger. This increment does not send those probes. The UI shows the derived range and the cap.
 
@@ -38,7 +38,7 @@ A non-contiguous mask, or a prefix outside 1..30, is reported as an unavailable 
 
 `src/ScannerUi.cpp` is a 222x480 portrait layout: Wi-Fi status, network list, on-device keyboard, network facts, and scanner controls. Password glyphs on screen are asterisks.
 
-Actionable controls share one geometry list, one painter, and one press tracker (`include/UiPress.h`). Touch-down paints that control immediately. Release inside the same control runs its action once. Sliding off before release cancels the action and restores the normal face. A tap shorter than 120 ms keeps the pressed face until 120 ms from touch-down so the acknowledgement stays visible. The Shift control stays filled while uppercase mode is on, and alphabet labels are an explicit `a-z`/`A-Z` map. `toupper` is not used. Serial logs on the password screen omit coordinates and key identity.
+Actionable controls share one geometry list (`collectUiControls` in `src/UiModel.cpp`), one painter, and one press tracker (`include/UiPress.h`). Host tests and the test-only HIL build call that same list. Touch-down paints that control immediately. Release inside the same control runs its action once. Sliding off before release cancels the action and restores the normal face. A tap shorter than 120 ms keeps the pressed face until 120 ms from touch-down so the acknowledgement stays visible. The Shift control stays filled while uppercase mode is on, and alphabet labels are an explicit `a-z`/`A-Z` map. `toupper` is not used. Serial logs on the password screen omit coordinates and key identity. See `docs/testing.md`.
 
 ## Still deferred
 

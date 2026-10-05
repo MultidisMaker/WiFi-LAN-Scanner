@@ -8,6 +8,9 @@
 #include "TouchBoard.h"
 #include "UiPress.h"
 #include "WifiService.h"
+#if WLS_TEST_MODE
+#include "HilConsole.h"
+#endif
 
 namespace {
 DisplayBoard gDisplay;
@@ -41,10 +44,16 @@ void setup() {
   Serial.printf("WLS mask-selftest=%s preserved=%s\n", maskOk && preservedOk ? "ok" : "fail", preservedOk ? "yes" : "no");
   gUi.begin(gWifi, gScanner);
   Serial.println("WLS ready discovery=deferred");
+#if WLS_TEST_MODE
+  Serial.println("WLS-HIL ready");
+#endif
 }
 
 void loop() {
   gWifi.loop();
   gScanner.loop();
   gUi.loop();
+#if WLS_TEST_MODE
+  hilPoll();
+#endif
 }

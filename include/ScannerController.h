@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
 
 // Foundation only. SCANNING does not transmit ARP, ICMP, TCP, UDP, or any other host probe.
 enum class ScanState : uint8_t {
@@ -27,6 +27,6 @@ class ScannerController {
 
  private:
   ScanState state_ = ScanState::Idle;
-  unsigned long enteredMs_ = 0;
+  uint32_t enteredMs_ = 0;
   void enter(ScanState next);
 };

@@ -3,34 +3,12 @@
 #include <WiFi.h>
 
 #include "BoardConfig.h"
+#include "NetMath.h"
 
 namespace {
-uint32_t pack(const IPAddress& ip) {
-  return (uint32_t(ip[0]) << 24) | (uint32_t(ip[1]) << 16) | (uint32_t(ip[2]) << 8) | uint32_t(ip[3]);
-}
+Ipv4 toIpv4(const IPAddress& ip) { return ipv4(ip[0], ip[1], ip[2], ip[3]); }
 
-IPAddress unpack(uint32_t value) {
-  return IPAddress((value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF);
-}
-
-uint8_t prefixOf(uint32_t mask, bool& contiguous) {
-  uint8_t bits = 0;
-  bool zeroSeen = false;
-  contiguous = true;
-  for (int shift = 31; shift >= 0; --shift) {
-    const bool one = ((mask >> shift) & 1U) != 0;
-    if (one) {
-      if (zeroSeen) {
-        contiguous = false;
-        return 0;
-      }
-      ++bits;
-    } else {
-      zeroSeen = true;
-    }
-  }
-  return bits;
-}
+IPAddress fromIpv4(const Ipv4& ip) { return IPAddress(ip.octet[0], ip.octet[1], ip.octet[2], ip.octet[3]); }
 }
 
 void formatIp(const IPAddress& ip, char* out, size_t outLen) {
@@ -39,31 +17,22 @@ void formatIp(const IPAddress& ip, char* out, size_t outLen) {
 
 NetworkRange deriveRange(const IPAddress& address, const IPAddress& mask, const IPAddress& gateway,
                          const IPAddress& dnsPrimary, const IPAddress& dnsSecondary) {
+  const NetFacts facts = deriveNetFacts(toIpv4(address), toIpv4(mask), toIpv4(gateway), toIpv4(dnsPrimary),
+                                        toIpv4(dnsSecondary));
   NetworkRange range;
-  range.address = address;
-  range.mask = mask;
-  range.gateway = gateway;
-  range.dnsPrimary = dnsPrimary;
-  range.dnsSecondary = dnsSecondary;
-  range.hasSecondaryDns = pack(dnsSecondary) != 0;
-  range.futureScanCap = kFutureScanHostCap;
-  bool contiguous = false;
-  const uint32_t maskValue = pack(mask);
-  const uint8_t prefix = prefixOf(maskValue, contiguous);
-  if (!contiguous || prefix == 0 || prefix > 30) {
-    return range;
-  }
-  const uint32_t ipValue = pack(address);
-  const uint32_t network = ipValue & maskValue;
-  const uint32_t broadcast = network | ~maskValue;
-  const uint8_t hostBits = static_cast<uint8_t>(32 - prefix);
-  const uint64_t usable = (1ULL << hostBits) - 2ULL;
-  range.valid = true;
-  range.prefix = prefix;
-  range.network = unpack(network);
-  range.broadcast = unpack(broadcast);
-  range.usableHosts = usable > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : static_cast<uint32_t>(usable);
-  range.futureScanCount = range.usableHosts < kFutureScanHostCap ? range.usableHosts : kFutureScanHostCap;
+  range.valid = facts.valid;
+  range.address = fromIpv4(facts.address);
+  range.mask = fromIpv4(facts.mask);
+  range.gateway = fromIpv4(facts.gateway);
+  range.dnsPrimary = fromIpv4(facts.dnsPrimary);
+  range.dnsSecondary = fromIpv4(facts.dnsSecondary);
+  range.hasSecondaryDns = facts.hasSecondaryDns;
+  range.network = fromIpv4(facts.network);
+  range.broadcast = fromIpv4(facts.broadcast);
+  range.prefix = facts.prefix;
+  range.usableHosts = facts.usableHosts;
+  range.futureScanCap = facts.futureScanCap;
+  range.futureScanCount = facts.futureScanCount;
   return range;
 }
 

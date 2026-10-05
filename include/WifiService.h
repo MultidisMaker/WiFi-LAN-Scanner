@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "BoardConfig.h"
+#include "PasswordBuffer.h"
 
 enum class WifiPhase : uint8_t {
   Idle,
@@ -48,15 +49,13 @@ class WifiService {
  private:
   WifiPhase phase_ = WifiPhase::Idle;
   bool saved_ = false;
-  bool shift_ = false;
   bool selectedSecure_ = false;
-  int passwordLength_ = 0;
   unsigned long connectStartedMs_ = 0;
   int resultCount_ = 0;
+  PasswordBuffer password_;
   char savedSsid_[kMaxSsidLen + 1] = {};
   char savedPsk_[kMaxPassLen + 1] = {};
   char selectedSsid_[kMaxSsidLen + 1] = {};
-  char typedPsk_[kMaxPassLen + 1] = {};
   char status_[48] = "Wi-Fi idle";
   WifiAp results_[kMaxScanResults] = {};
 
