@@ -1,41 +1,47 @@
 # WiFi LAN Scanner architecture
 
-This document records the approved component boundaries for the bootstrap. None of the scanning, enrichment, persistence, or touch behavior is implemented yet.
-
-The compile target is PlatformIO board id `lilygo-t-display-s3` (LilyGo T-Display-S3, ESP32-S3). That board id is supplied by the installed PlatformIO Espressif 32 platform. T-Display-S3-Pro peripheral pin mappings, display differences, and any Pro-specific board definition are explicitly deferred. This repository does not invent those mappings.
+This increment implements the hardware, Wi-Fi, UI, network-characterization, and scanner-controller foundation. The discovery engine, enrichment engine, inventory model, and inventory persistence service are still deferred. No host-discovery probes are sent.
 
 ## Hardware abstraction
 
-Owns board startup, display and touch access, and any later Pro-specific pin or bus mapping. The bootstrap does not select Pro pins. Later work must add a reviewed mapping before the UI or radio code depends on it.
+`include/BoardConfig.h` and `src/DisplayBoard.cpp` use the installed GFX Library for Arduino 1.4.6 definition `LILYGO_T_DISPLAY_S3_PRO`:
+
+- Panel: ST7796, 222x480, IPS, rotation 0, column offset 49
+- SPI: DC 9, CS 39, SCK 18, MOSI 17, MISO 8, RST 47
+- Backlight: GPIO 48, driven with LEDC as on the TF-LAPTOP-00 diagnostic that already exercised this panel
+
+Source file: `Arduino_GFX_dev_device.h` in GFX Library for Arduino 1.4.6, branch `LILYGO_T_DISPLAY_S3_PRO`.
+
+Touch uses SensorLib 0.1.6 `TouchDrvCSTXXX`, vendored at `lib/SensorLib` from the installed 0.1.6 tree, at CST226SE address `0x5A` on SDA 5 / SCL 6. Reset and interrupt stay at -1. Those I2C pins and the unassigned reset/irq pins are the observed Pro touch path recorded by the local diagnostic `Documents\MakerNexus\GarageController\Firmware\src\pro_profile.h`. The non-Pro 170x320 parallel panel pins are not used.
+
+The PlatformIO board id remains `lilygo-t-display-s3` because that is the installed ESP32-S3 / 16MB-flash target. It does not supply the Pro panel map.
+
+Camera, PMIC, ambient light, SD, and buttons are not initialized. No installed Pro source used here names a touch reset, touch interrupt, or button GPIO, so none is guessed.
 
 ## Wi-Fi manager
 
-Owns association to an operator-supplied network and exposes connection state to the rest of the firmware. The bootstrap does not store SSIDs, passwords, or a credential screen.
+`src/WifiService.cpp` scans nearby access points, shows SSID, RSSI, and open/secured state, accepts an on-device password, connects, forgets the saved network, and reconnects after reboot when a saved network remains.
 
-## Scanner controller/state machine
+Saved credentials go to ESP32 Preferences namespace `wlan` under keys `ssid` and `psk`. `WiFi.persistent(false)` keeps the Arduino Wi-Fi stack from making a second SDK copy. This NVS storage is not encrypted. Flash encryption is not enabled. The firmware does not print passwords or write them to source, serial logs, or files.
 
-Owns the high-level scan lifecycle: idle, scanning, enriching, and presenting results. The bootstrap does not start a scan or define probe timing.
+## Network characterization
 
-## Discovery engine
+`src/NetworkRange.cpp` reads the station IPv4 address, subnet mask, gateway, and DNS servers from the Arduino-ESP32 `WiFi` object. The network address and prefix come from the address AND the mask. Usable host count is `2^(32-prefix) - 2` for a contiguous prefix from 1 through 30. The code does not assume `/24`.
 
-Owns active discovery of devices on the joined LAN. Planned later work may include inventory-oriented discovery. The bootstrap does not implement ARP sweeps, ICMP probes, TCP or UDP probes, mDNS, SSDP, or NetBIOS queries. This component is not a passive packet sniffer and is not a vulnerability scanner.
+A non-contiguous mask, or a prefix outside 1..30, is reported as an unavailable range. A future discovery pass may examine at most 256 usable hosts (`kFutureScanHostCap`), even if the subnet is larger. This increment does not send those probes. The UI shows the derived range and the cap.
 
-## Enrichment engine
+## Scanner controller
 
-Owns later annotation of discovered devices, including a possible OUI manufacturer lookup. The bootstrap does not ship an OUI database and does not perform lookup.
+`src/ScannerController.cpp` has `IDLE`, `STARTING`, `SCANNING`, `PAUSED`, `STOPPING`, and `COMPLETE`. `STARTING` and `STOPPING` advance on a 200ms timer inside `loop()`. `SCANNING` does not transmit. The touch UI keeps running while states change.
 
-## Inventory model
+## UI / touch
 
-Owns the in-memory shape of a discovered device and a scan session. The bootstrap does not define a stored inventory schema and does not record IP or MAC addresses.
+`src/ScannerUi.cpp` is a 222x480 portrait layout: Wi-Fi status, network list, on-device keyboard, network facts, and scanner controls. Password glyphs on screen are asterisks.
 
-## Persistence service
+## Still deferred
 
-Owns later saving and reloading of inventories on device storage. The bootstrap does not write scan results. Runtime inventories, captures, and generated logs are gitignored so they do not become source artifacts.
-
-## UI/touch layer
-
-Owns the later T-Display-S3-Pro touch interface for starting a scan and reading the inventory. The bootstrap does not draw a UI or bind touch input.
-
-## Build boundary
-
-`platformio.ini` selects the Arduino-ESP32 framework and the family board above. Validation of this baseline is `pio run` only. Firmware upload is out of scope.
+- Discovery engine: ARP, ICMP, TCP, UDP, mDNS, SSDP, and NetBIOS
+- Enrichment engine and OUI lookup
+- Inventory model and persistence
+- SD-card scan history
+- T-Display-S3-Pro pins that this increment does not use
