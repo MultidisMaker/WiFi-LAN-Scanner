@@ -6,6 +6,7 @@
 #include "ScannerController.h"
 #include "ScannerUi.h"
 #include "TouchBoard.h"
+#include "UiPress.h"
 #include "WifiService.h"
 
 namespace {
@@ -30,7 +31,14 @@ void setup() {
   gTouch.begin();
   networkRangeSelfTest();
   gScanner.selfTest();
+  const bool pressOk = pressTrackerSelfTest();
+  const bool glyphOk = keyGlyphSelfTest();
+  const bool maskOk = maskPasswordSelfTest();
   gWifi.begin();
+  const bool preservedOk = gWifi.maskingSelfTest();
+  Serial.printf("WLS ui-selftest=%s ackMs=%lu faces=4\n", pressOk && glyphOk && maskOk && preservedOk ? "ok" : "fail",
+                static_cast<unsigned long>(PressTracker::kAckMs));
+  Serial.printf("WLS mask-selftest=%s preserved=%s\n", maskOk && preservedOk ? "ok" : "fail", preservedOk ? "yes" : "no");
   gUi.begin(gWifi, gScanner);
   Serial.println("WLS ready discovery=deferred");
 }

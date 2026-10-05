@@ -32,6 +32,10 @@ A mask such as `255.0.255.0` is rejected because it is not contiguous. The firmw
 
 `kFutureScanHostCap` is 256. A later discovery increment must not probe more than the smaller of the usable host count and this cap. The current scanner state machine does not probe hosts at all.
 
+## Touch interaction
+
+Find networks, network rows, Back, Previous, Next, Forget, Start, Pause, Resume, Stop, Reset, keyboard keys, Shift, page, backspace, OK, and close use the same press painter. A pressed control is drawn inverted. Shift stays filled, and its label reads `SHIFT`, while uppercase mode is on. Alphabet keys then draw `A-Z`. They draw `a-z` when Shift is off. Shift does not rewrite characters already in the password buffer. The password field stays masked.
+
 ## Deferred discovery
 
 No ARP sweep, ICMP echo, TCP or UDP probe, mDNS, SSDP, NetBIOS, OUI lookup, packet capture, or inventory file is implemented.

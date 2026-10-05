@@ -38,6 +38,8 @@ A non-contiguous mask, or a prefix outside 1..30, is reported as an unavailable 
 
 `src/ScannerUi.cpp` is a 222x480 portrait layout: Wi-Fi status, network list, on-device keyboard, network facts, and scanner controls. Password glyphs on screen are asterisks.
 
+Actionable controls share one geometry list, one painter, and one press tracker (`include/UiPress.h`). Touch-down paints that control immediately. Release inside the same control runs its action once. Sliding off before release cancels the action and restores the normal face. A tap shorter than 120 ms keeps the pressed face until 120 ms from touch-down so the acknowledgement stays visible. The Shift control stays filled while uppercase mode is on, and alphabet labels are an explicit `a-z`/`A-Z` map. `toupper` is not used. Serial logs on the password screen omit coordinates and key identity.
+
 ## Still deferred
 
 - Discovery engine: ARP, ICMP, TCP, UDP, mDNS, SSDP, and NetBIOS

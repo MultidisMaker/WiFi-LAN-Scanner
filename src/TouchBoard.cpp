@@ -38,20 +38,18 @@ bool TouchBoard::ready() const { return ready_; }
 
 const char* TouchBoard::model() const { return model_; }
 
-bool TouchBoard::takePress(int& x, int& y) {
+bool TouchBoard::readContact(bool& down, int& x, int& y) {
+  down = false;
   if (!ready_) {
     return false;
   }
   int16_t xs[1] = {0};
   int16_t ys[1] = {0};
   const uint8_t points = gTouch.getPoint(xs, ys, 1);
-  const bool down = points > 0;
-  bool edge = false;
-  if (down && !wasDown_) {
+  down = points > 0;
+  if (down) {
     x = xs[0];
     y = ys[0];
-    edge = true;
   }
-  wasDown_ = down;
-  return edge;
+  return true;
 }

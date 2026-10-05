@@ -41,6 +41,9 @@ class WifiService {
   void submitPassword();
   void forget();
   const char* selectedSsid() const;
+  // Types one synthetic character, toggles Shift, and checks the buffer is unchanged.
+  // Clears the buffer before returning. Does not print the character.
+  bool maskingSelfTest();
 
  private:
   WifiPhase phase_ = WifiPhase::Idle;

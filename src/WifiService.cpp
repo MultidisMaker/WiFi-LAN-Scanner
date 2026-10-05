@@ -218,6 +218,23 @@ void WifiService::submitPassword() {
   passwordLength_ = 0;
 }
 
+bool WifiService::maskingSelfTest() {
+  if (passwordLength_ != 0 || shift_ || typedPsk_[0] != '\0') {
+    return false;
+  }
+  typeChar('a');
+  const bool typed = passwordLength_ == 1 && typedPsk_[0] == 'a' && typedPsk_[1] == '\0';
+  toggleShift();
+  const bool preserved = typed && shift_ && passwordLength_ == 1 && typedPsk_[0] == 'a';
+  toggleShift();
+  const bool restored = preserved && !shift_ && typedPsk_[0] == 'a';
+  backspace();
+  memset(typedPsk_, 0, sizeof(typedPsk_));
+  passwordLength_ = 0;
+  shift_ = false;
+  return restored && passwordLength_ == 0 && typedPsk_[0] == '\0';
+}
+
 void WifiService::forget() {
   clearSaved();
   WiFi.disconnect(true, true);

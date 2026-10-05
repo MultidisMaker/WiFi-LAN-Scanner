@@ -10,11 +10,10 @@ class TouchBoard {
   bool begin();
   bool ready() const;
   const char* model() const;
-  // Returns true once per new press. Coordinates are panel pixels.
-  bool takePress(int& x, int& y);
+  // Current finger contact. Coordinates are panel pixels while down is true.
+  bool readContact(bool& down, int& x, int& y);
 
  private:
   bool ready_ = false;
-  bool wasDown_ = false;
   char model_[24] = "absent";
 };

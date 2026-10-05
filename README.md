@@ -10,7 +10,7 @@ This firmware is intended to build an on-device inventory of devices on a networ
 - MCU: ESP32-S3
 - Display: 2.33-inch 222x480 touch display
 
-The current firmware is the first functional increment for the LILYGO T-Display-S3-Pro. It provides touchscreen Wi-Fi setup, NVS-backed saved networks, IPv4 network characterization, and a scanner-controller state machine. Host discovery is not implemented. See `docs/architecture.md` and `docs/wifi-foundation.md`.
+The current firmware is the Wi-Fi foundation for the LILYGO T-Display-S3-Pro. It provides touchscreen Wi-Fi setup with press-and-release controls, a latched Shift key, NVS-backed saved networks, IPv4 network characterization, and a scanner-controller state machine. Host discovery is not implemented. See `docs/architecture.md` and `docs/wifi-foundation.md`.
 
 Saved Wi-Fi credentials are stored in ESP32 NVS. That storage is not encrypted in this firmware.
 
