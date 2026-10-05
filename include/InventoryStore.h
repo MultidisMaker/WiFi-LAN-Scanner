@@ -10,12 +10,15 @@ enum class InventoryStoreStatus : uint8_t { Unavailable = 0, Stored = 1, Absent 
 
 struct InventoryStoreResult {
   InventoryStoreStatus status = InventoryStoreStatus::Unavailable;
-  const char* detail = "contract-unproven";
+  const char* detail = "not-written";
+  char path[64] = {};
 };
 
 class ScannerController;
 
 InventoryStoreResult storeInventoryOnSd();
+void rememberInventoryStore(const InventoryStoreResult& result);
+const InventoryStoreResult& lastInventoryStore();
 
 #ifndef WLS_TEST_MODE
 #define WLS_TEST_MODE 0
@@ -29,6 +32,7 @@ void bindInventoryScanner(const ScannerController* scanner);
 struct SdProbeResult {
   const char* result = "fail";
   const char* stage = "unknown";
+  const char* path = "";
   uint32_t bytes = 0;
   bool match = false;
   bool removed = false;

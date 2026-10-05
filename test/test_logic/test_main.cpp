@@ -15,8 +15,10 @@
 #include "Oui.h"
 #include "OuiData.h"
 #include "PasswordBuffer.h"
+#include "RemoteProtocol.h"
 #include "ResourceFormat.h"
 #include "ScanClock.h"
+#include "UiStatus.h"
 #include "ScannerController.h"
 #include "UiModel.h"
 #include "UiPress.h"
@@ -1115,7 +1117,8 @@ void test_inventory_csv_escape_and_publish(void) {
   memset(gExportRam, 0, sizeof(gExportRam));
   char path[80];
   TEST_ASSERT_TRUE(inventoryScanPath(path, sizeof(path), 1));
-  TEST_ASSERT_TRUE(strcmp(path, "/LANScanner/scans/scan-00000001.csv") == 0);
+  TEST_ASSERT_TRUE(strcmp(path, "/WiFi-LAN-Scanner/scans/scan-00000001.csv") == 0);
+  TEST_ASSERT_TRUE(strstr(path, "/LANScanner/scans/") == nullptr);
   PublishSink sink;
   sink.write = exportWrite;
   sink.rename = exportRename;
@@ -1129,6 +1132,426 @@ void test_inventory_csv_escape_and_publish(void) {
   const InventoryStoreResult stored = storeInventoryOnSd();
   TEST_ASSERT_TRUE(stored.status == InventoryStoreStatus::Unavailable);
   TEST_ASSERT_TRUE(stored.detail != nullptr && strcmp(stored.detail, "contract-unproven") == 0);
+}
+
+void test_ui_scan_and_persist_copy(void) {
+  char banner[80];
+  char card[22];
+  TEST_ASSERT_TRUE(formatScanBanner(banner, sizeof(banner), ScanState::Idle, false, 0, 0, 0));
+  TEST_ASSERT_EQUAL_STRING("Idle | join Wi-Fi before scanning", banner);
+  TEST_ASSERT_TRUE(formatScanCard(card, sizeof(card), ScanState::Idle, false, 0, 0));
+  TEST_ASSERT_EQUAL_STRING("Idle join Wi-Fi", card);
+
+  TEST_ASSERT_TRUE(formatScanBanner(banner, sizeof(banner), ScanState::Idle, true, 0, 256, 0));
+  TEST_ASSERT_EQUAL_STRING("Ready | 0/256 observed 0", banner);
+  TEST_ASSERT_TRUE(formatScanCard(card, sizeof(card), ScanState::Idle, true, 0, 256));
+  TEST_ASSERT_EQUAL_STRING("Ready 0/256", card);
+
+  TEST_ASSERT_TRUE(formatScanBanner(banner, sizeof(banner), ScanState::Scanning, true, 4, 20, 1));
+  TEST_ASSERT_EQUAL_STRING("Scanning | 4/20 observed 1", banner);
+  TEST_ASSERT_TRUE(formatScanCard(card, sizeof(card), ScanState::Scanning, true, 4, 20));
+  TEST_ASSERT_EQUAL_STRING("Scanning 4/20", card);
+
+  TEST_ASSERT_TRUE(formatScanBanner(banner, sizeof(banner), ScanState::Paused, true, 4, 20, 1));
+  TEST_ASSERT_EQUAL_STRING("Paused | 4/20 observed 1", banner);
+  TEST_ASSERT_TRUE(formatScanCard(card, sizeof(card), ScanState::Paused, true, 4, 20));
+  TEST_ASSERT_EQUAL_STRING("Paused 4/20", card);
+
+  TEST_ASSERT_TRUE(formatScanBanner(banner, sizeof(banner), ScanState::Complete, true, 20, 20, 2));
+  TEST_ASSERT_EQUAL_STRING("Complete | 20/20 observed 2", banner);
+  TEST_ASSERT_TRUE(formatScanCard(card, sizeof(card), ScanState::Complete, true, 20, 20));
+  TEST_ASSERT_EQUAL_STRING("Complete 20/20", card);
+
+  TEST_ASSERT_TRUE(formatScanCard(card, sizeof(card), ScanState::Scanning, true, 256, 256));
+  TEST_ASSERT_EQUAL_STRING("Scanning 256/256", card);
+  TEST_ASSERT_TRUE(strlen(card) < sizeof(card));
+
+  InventoryStoreResult fresh;
+  char panel[48];
+  char full[96];
+  TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), fresh));
+  TEST_ASSERT_EQUAL_STRING("SD not written", full);
+  TEST_ASSERT_TRUE(formatPersistPanel(panel, sizeof(panel), fresh));
+  TEST_ASSERT_EQUAL_STRING("SD not written", panel);
+
+  InventoryStoreResult unavailable;
+  unavailable.detail = "contract-unproven";
+  TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), unavailable));
+  TEST_ASSERT_EQUAL_STRING("SD unavailable", full);
+
+  InventoryStoreResult absent;
+  absent.status = InventoryStoreStatus::Absent;
+  absent.detail = "media-absent";
+  TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), absent));
+  TEST_ASSERT_EQUAL_STRING("SD absent", full);
+
+  InventoryStoreResult failed;
+  failed.status = InventoryStoreStatus::Failed;
+  failed.detail = "write";
+  TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), failed));
+  TEST_ASSERT_EQUAL_STRING("SD error", full);
+
+  InventoryStoreResult stored;
+  stored.status = InventoryStoreStatus::Stored;
+  stored.detail = "stored";
+  snprintf(stored.path, sizeof(stored.path), "/WiFi-LAN-Scanner/scans/scan-00000001.csv");
+  TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), stored));
+  TEST_ASSERT_EQUAL_STRING("SD stored /WiFi-LAN-Scanner/scans/scan-00000001.csv", full);
+  TEST_ASSERT_TRUE(formatPersistPanel(panel, sizeof(panel), stored));
+  TEST_ASSERT_EQUAL_STRING("Stored /WiFi-LAN-Scanner/scans/", panel);
+  TEST_ASSERT_TRUE(strlen(panel) <= 34);
+  TEST_ASSERT_TRUE(strlen(panel) < strlen(full));
+}
+
+struct RemoteWorld {
+  ScannerController* scanner = nullptr;
+  AppView* view = nullptr;
+  int applies = 0;
+  AppAction last = AppAction::None;
+  int lastRow = -1;
+  InventoryRow rows[2];
+  int rowsCount = 0;
+  AppState state;
+  bool haveState = false;
+};
+
+static bool worldApply(void* context, AppAction action, int rowOffset) {
+  auto* world = static_cast<RemoteWorld*>(context);
+  if (world == nullptr || world->scanner == nullptr || world->view == nullptr) {
+    return false;
+  }
+  world->applies += 1;
+  world->last = action;
+  world->lastRow = rowOffset;
+  if (action == AppAction::SelectRow) {
+    world->view->rowOffset = rowOffset;
+  }
+  applyAppAction(action, *world->view, *world->scanner, nullptr);
+  return true;
+}
+
+static void worldLoad(void* context, AppState* out) {
+  auto* world = static_cast<RemoteWorld*>(context);
+  if (out == nullptr) {
+    return;
+  }
+  if (world != nullptr && world->haveState) {
+    *out = world->state;
+    return;
+  }
+  if (world == nullptr || world->scanner == nullptr || world->view == nullptr) {
+    *out = AppState();
+    return;
+  }
+  AppWifiView wifi;
+  wifi.phase = "connected";
+  wifi.ssid = "TFMiddle";
+  wifi.saved = false;
+  fillAppState(*out, *world->view, *world->scanner, wifi);
+}
+
+static int worldRows(void* context) {
+  auto* world = static_cast<RemoteWorld*>(context);
+  if (world == nullptr || world->rowsCount < 0) {
+    return 0;
+  }
+  return world->rowsCount;
+}
+
+static bool worldRow(void* context, int index, InventoryRow* out) {
+  auto* world = static_cast<RemoteWorld*>(context);
+  if (world == nullptr || out == nullptr || index < 0 || index >= world->rowsCount || index >= 2) {
+    return false;
+  }
+  *out = world->rows[index];
+  return true;
+}
+
+static RemoteServices worldServices(RemoteWorld& world) {
+  RemoteServices services;
+  services.apply = worldApply;
+  services.loadState = worldLoad;
+  services.rowCount = worldRows;
+  services.rowAt = worldRow;
+  services.context = &world;
+  return services;
+}
+
+static int submitWorld(RemoteSession& session, RemoteWorld& world, const char* line, char* out, int cap) {
+  const RemoteServices services = worldServices(world);
+  return remoteSubmit(&session, line, out, cap, &services);
+}
+
+static int pullWorld(RemoteSession& session, RemoteWorld& world, char* out, int cap) {
+  const RemoteServices services = worldServices(world);
+  return remotePull(&session, out, cap, &services);
+}
+
+static void requireHello(RemoteSession& session, RemoteWorld& world) {
+  char out[640];
+  const int n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"HELLO\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(n > 0);
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"HELLO_ACK\",\"ok\":1,\"link\":\"usb\",\"support\":1}\n", out);
+  TEST_ASSERT_TRUE(session.link == RemoteLink::ConnectedUsb);
+}
+
+static void requireAction(RemoteSession& session, RemoteWorld& world, const char* name) {
+  char out[640];
+  char line[128];
+  char expect[128];
+  snprintf(line, sizeof(line), "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"%s\"}", name);
+  snprintf(expect, sizeof(expect), "@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"%s\",\"ok\":1}\n", name);
+  const int n = submitWorld(session, world, line, out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(n > 0);
+  TEST_ASSERT_EQUAL_STRING(expect, out);
+}
+
+void test_remote_session_and_state(void) {
+  RemoteWorld world;
+  world.haveState = true;
+  world.state.screen = AppScreen::Home;
+  snprintf(world.state.wifiPhase, sizeof(world.state.wifiPhase), "connected");
+  memset(world.state.ssid, 'S', 32);
+  world.state.ssid[30] = '"';
+  world.state.ssid[32] = '\0';
+  snprintf(world.state.scan, sizeof(world.state.scan), "IDLE");
+  world.state.processed = 256;
+  world.state.candidates = 256;
+  world.state.observed = 3;
+  snprintf(world.state.current, sizeof(world.state.current), "10.28.255.254");
+  snprintf(world.state.last, sizeof(world.state.last), "10.28.255.254");
+  snprintf(world.state.newest, sizeof(world.state.newest), "10.28.0.12");
+  world.state.elapsedMs = 180000;
+  world.state.canStart = true;
+
+  RemoteSession session;
+  char out[640];
+  int n = submitWorld(session, world, "@R1 {\"v\":2,\"op\":\"HELLO\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"HELLO_ACK\",\"ok\":0,\"link\":\"none\",\"support\":1}\n", out);
+  TEST_ASSERT_TRUE(session.link == RemoteLink::Disconnected);
+
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_STATE\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"closed\"}\n", out);
+
+  requireHello(session, world);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"HELLO\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"session\"}\n", out);
+  TEST_ASSERT_TRUE(session.link == RemoteLink::ConnectedUsb);
+
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_STATE\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(n > 0 && n < 576);
+  TEST_ASSERT_TRUE(strncmp(out, "@R1 {\"v\":1,\"op\":\"STATE\"", 22) == 0);
+  TEST_ASSERT_TRUE(strstr(out, "\\\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "\"scan\":\"IDLE\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "\"screen\":\"home\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "password") == nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "passphrase") == nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "psk") == nullptr);
+  TEST_ASSERT_TRUE(strncmp(out, "WLS", 3) != 0);
+
+  n = submitWorld(session, world, "@R1 {", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"malformed\"}\n", out);
+  TEST_ASSERT_TRUE(session.link == RemoteLink::ConnectedUsb);
+
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"PING\",\"nested\":{\"a\":1}}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"malformed\"}\n", out);
+
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"SHELL\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"unknown\"}\n", out);
+
+  char huge[360];
+  memcpy(huge, "@R1 ", 4);
+  memset(huge + 4, 'B', 330);
+  huge[334] = '\0';
+  TEST_ASSERT_TRUE(strlen(huge) > static_cast<size_t>(kRemoteMaxLine));
+  n = submitWorld(session, world, huge, out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"oversize\"}\n", out);
+  TEST_ASSERT_TRUE(session.link == RemoteLink::ConnectedUsb);
+  TEST_ASSERT_FALSE(session.streaming);
+
+  n = remoteMarkOversize(&session, out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"oversize\"}\n", out);
+
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"PING\",\"id\":7}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"PONG\",\"id\":7}\n", out);
+
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GOODBYE\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"GOODBYE\",\"ok\":1}\n", out);
+  TEST_ASSERT_TRUE(session.link == RemoteLink::Disconnected);
+
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"PING\",\"id\":7}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"closed\"}\n", out);
+  requireHello(session, world);
+}
+
+void test_remote_touch_parity(void) {
+  gScanNow = 12000;
+  ScannerController touchScanner;
+  ScannerController remoteScanner;
+  FakeDiscoveryBackend touchBackend;
+  FakeDiscoveryBackend remoteBackend;
+  armReady(touchScanner, touchBackend, lan24(), 60000);
+  armReady(remoteScanner, remoteBackend, lan24(), 60000);
+  AppView touchView;
+  AppView remoteView;
+  RemoteWorld world;
+  world.scanner = &remoteScanner;
+  world.view = &remoteView;
+  RemoteSession session;
+  requireHello(session, world);
+
+  act(touchScanner, touchView, true, IdStart, AppAction::StartScan, nullptr);
+  requireAction(session, world, "start");
+  TEST_ASSERT_TRUE(touchScanner.state() == ScanState::Starting && remoteScanner.state() == ScanState::Starting);
+
+  gScanNow += kScannerTransitionMs;
+  touchScanner.loop();
+  remoteScanner.loop();
+  TEST_ASSERT_TRUE(touchScanner.state() == ScanState::Scanning && remoteScanner.state() == ScanState::Scanning);
+  TEST_ASSERT_TRUE(touchScanner.processedCount() == remoteScanner.processedCount());
+
+  act(touchScanner, touchView, true, IdPause, AppAction::PauseScan, nullptr);
+  requireAction(session, world, "pause");
+  TEST_ASSERT_TRUE(touchScanner.state() == ScanState::Paused && remoteScanner.state() == ScanState::Paused);
+
+  act(touchScanner, touchView, true, IdResume, AppAction::ResumeScan, nullptr);
+  requireAction(session, world, "resume");
+  TEST_ASSERT_TRUE(touchScanner.state() == ScanState::Scanning && remoteScanner.state() == ScanState::Scanning);
+
+  act(touchScanner, touchView, true, IdStop, AppAction::StopScan, nullptr);
+  requireAction(session, world, "stop");
+  gScanNow += kScannerTransitionMs;
+  touchScanner.loop();
+  remoteScanner.loop();
+  TEST_ASSERT_TRUE(touchScanner.state() == ScanState::Complete && remoteScanner.state() == ScanState::Complete);
+
+  act(touchScanner, touchView, true, IdReset, AppAction::ResetScan, nullptr);
+  requireAction(session, world, "reset");
+  TEST_ASSERT_TRUE(touchScanner.state() == ScanState::Idle && remoteScanner.state() == ScanState::Idle);
+  TEST_ASSERT_TRUE(touchScanner.observedCount() == 0 && remoteScanner.observedCount() == 0);
+  TEST_ASSERT_TRUE(touchView.page == 0 && remoteView.page == 0);
+
+  touchView.observedCount = 13;
+  remoteView.observedCount = 13;
+  act(touchScanner, touchView, true, IdHosts, AppAction::OpenHosts, nullptr);
+  requireAction(session, world, "hosts");
+  TEST_ASSERT_TRUE(touchView.showingHosts && remoteView.showingHosts);
+  TEST_ASSERT_TRUE(touchView.page == 0 && remoteView.page == 0);
+  touchView.observedCount = 13;
+  remoteView.observedCount = 13;
+  act(touchScanner, touchView, true, IdNext, AppAction::NextPage, nullptr);
+  requireAction(session, world, "next");
+  TEST_ASSERT_TRUE(touchView.page == 1 && remoteView.page == 1);
+  act(touchScanner, touchView, true, IdPrev, AppAction::PrevPage, nullptr);
+  requireAction(session, world, "prev");
+  TEST_ASSERT_TRUE(touchView.page == 0 && remoteView.page == 0);
+  act(touchScanner, touchView, true, IdBack, AppAction::Back, nullptr);
+  requireAction(session, world, "back");
+  TEST_ASSERT_TRUE(!touchView.showingHosts && !remoteView.showingHosts);
+
+  const int before = world.applies;
+  char out[640];
+  const int unknown = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"shell\"}", out,
+                                  static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(unknown > 0);
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"unknown\"}\n", out);
+  TEST_ASSERT_TRUE(world.applies == before);
+  TEST_ASSERT_TRUE(remoteScanner.state() == ScanState::Idle);
+
+  const int range = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"row\",\"index\":9}", out,
+                                static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(range > 0);
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"range\"}\n", out);
+  TEST_ASSERT_TRUE(world.applies == before);
+
+  const int row = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"row\",\"index\":2}", out,
+                              static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(row > 0);
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"row\",\"ok\":1}\n", out);
+  TEST_ASSERT_TRUE(world.applies == before + 1);
+  TEST_ASSERT_TRUE(world.last == AppAction::SelectRow && world.lastRow == 2);
+
+  const int extra = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"pause\",\"index\":3}", out,
+                                static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(extra > 0);
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"pause\",\"ok\":1}\n", out);
+  TEST_ASSERT_TRUE(world.last == AppAction::PauseScan && world.lastRow == -1);
+  TEST_ASSERT_TRUE(remoteScanner.state() == ScanState::Idle);
+}
+
+void test_remote_result_rows(void) {
+  RemoteWorld world;
+  ObservedHost named;
+  named.ip = ipv4(10, 28, 0, 11);
+  named.hasMac = true;
+  const uint8_t namedMac[6] = {0x00, 0x30, 0x18, 0xCB, 0xF9, 0x8E};
+  memcpy(named.mac, namedMac, sizeof(namedMac));
+  named.method = "arp";
+  snprintf(named.name, sizeof(named.name), "gw");
+  named.nameSource = NameSource::Mdns;
+  named.macClass = MacClass::Global;
+  named.ouiState = OuiState::Known;
+  named.manufacturer = "Say \"hi\"";
+  inventoryRowFromHost(world.rows[0], named);
+
+  ObservedHost bare;
+  bare.ip = ipv4(10, 28, 0, 12);
+  bare.method = "arp";
+  bare.macClass = MacClass::Global;
+  bare.ouiState = OuiState::Unknown;
+  inventoryRowFromHost(world.rows[1], bare);
+  world.rowsCount = 2;
+
+  RemoteSession session;
+  char first[640];
+  char second[640];
+  char end[640];
+  requireHello(session, world);
+  const int firstN = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_RESULTS\"}", first, static_cast<int>(sizeof(first)));
+  TEST_ASSERT_TRUE(firstN > 0);
+  TEST_ASSERT_TRUE(session.streaming);
+  TEST_ASSERT_TRUE(strstr(first, "\"op\":\"RESULT_ROW\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(first, "\"i\":0") != nullptr);
+  TEST_ASSERT_TRUE(strstr(first, world.rows[0].ip) != nullptr);
+  TEST_ASSERT_TRUE(strstr(first, world.rows[0].mac) != nullptr);
+  TEST_ASSERT_TRUE(strstr(first, world.rows[0].method) != nullptr);
+  TEST_ASSERT_TRUE(strstr(first, world.rows[0].name) != nullptr);
+  TEST_ASSERT_TRUE(strstr(first, "Say \\\"hi\\\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(first, "psk") == nullptr);
+  TEST_ASSERT_TRUE(strstr(first, "password") == nullptr);
+  TEST_ASSERT_TRUE(strstr(first, "passphrase") == nullptr);
+
+  const int busy = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"PING\",\"id\":1}", end, static_cast<int>(sizeof(end)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"busy\"}\n", end);
+  TEST_ASSERT_TRUE(busy > 0);
+
+  const int secondN = pullWorld(session, world, second, static_cast<int>(sizeof(second)));
+  TEST_ASSERT_TRUE(secondN > 0);
+  TEST_ASSERT_TRUE(strstr(second, "\"i\":1") != nullptr);
+  TEST_ASSERT_TRUE(strstr(second, world.rows[1].ip) != nullptr);
+  TEST_ASSERT_TRUE(strstr(second, "\"mac\":\"\"") != nullptr);
+  const int endN = pullWorld(session, world, end, static_cast<int>(sizeof(end)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"RESULT_END\",\"count\":2}\n", end);
+  TEST_ASSERT_TRUE(endN > 0);
+  TEST_ASSERT_FALSE(session.streaming);
+  TEST_ASSERT_TRUE(pullWorld(session, world, end, static_cast<int>(sizeof(end))) == 0);
+
+  const int recovered = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"PING\",\"id\":4}", end, static_cast<int>(sizeof(end)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"PONG\",\"id\":4}\n", end);
+  TEST_ASSERT_TRUE(recovered > 0);
+
+  char again[640];
+  const int againN = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_RESULTS\"}", again, static_cast<int>(sizeof(again)));
+  TEST_ASSERT_TRUE(againN > 0);
+  TEST_ASSERT_EQUAL_STRING(first, again);
+  TEST_ASSERT_TRUE(pullWorld(session, world, second, static_cast<int>(sizeof(second))) > 0);
+  TEST_ASSERT_TRUE(pullWorld(session, world, end, static_cast<int>(sizeof(end))) > 0);
+
+  world.rowsCount = 0;
+  const int empty = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_RESULTS\"}", end, static_cast<int>(sizeof(end)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"RESULT_END\",\"count\":0}\n", end);
+  TEST_ASSERT_TRUE(empty > 0);
+  TEST_ASSERT_FALSE(session.streaming);
 }
 
 void test_resource_line_injected(void) {
@@ -1182,6 +1605,10 @@ void setup() {
   RUN_TEST(test_action_parity_touch_and_direct);
   RUN_TEST(test_app_state_has_no_secret);
   RUN_TEST(test_inventory_csv_escape_and_publish);
+  RUN_TEST(test_ui_scan_and_persist_copy);
+  RUN_TEST(test_remote_session_and_state);
+  RUN_TEST(test_remote_touch_parity);
+  RUN_TEST(test_remote_result_rows);
   RUN_TEST(test_resource_line_injected);
   gFailures = UNITY_END();
 }

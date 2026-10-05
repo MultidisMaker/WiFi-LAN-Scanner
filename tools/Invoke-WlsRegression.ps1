@@ -89,7 +89,7 @@ function Get-TfMiddleLiveJson {
         $payload = [ordered]@{
             ssid = 'TFMiddle'
             psk = $plain
-            instructionId = 'MM-PenTest-A010'
+            instructionId = 'MM-PenTest-A011'
         }
         return ($payload | ConvertTo-Json -Compress)
     } finally {
@@ -212,6 +212,15 @@ function Test-AsciiToken {
     }
 }
 
+function Reset-KnownBoardUsb {
+    $instance = 'USB\VID_303A&PID_1001\' + $knownSerial
+    Disable-PnpDevice -InstanceId $instance -Confirm:$false -ErrorAction Stop
+    Start-Sleep -Seconds 2
+    Enable-PnpDevice -InstanceId $instance -Confirm:$false -ErrorAction Stop
+    Start-Sleep -Seconds 3
+    Write-Step 'USB_REENUM=ok'
+}
+
 function Get-IntendedPort {
     $nodes = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -match 'VID_303A&PID_1001' })
     $parents = @($nodes | Where-Object { $_.PNPDeviceID -match [regex]::Escape($knownSerial) })
@@ -245,11 +254,23 @@ try {
 
     $port = Get-IntendedPort
     $idLog = Join-Path $WorkDir 'flash-id.log'
-    Invoke-Logged -Name 'flash_id' -LogPath $idLog -Action {
-        & $python $esptool --chip esp32s3 --port $port flash_id
+    $idOk = $false
+    for ($try = 1; $try -le 2 -and -not $idOk; $try++) {
+        if ($try -gt 1) {
+            Reset-KnownBoardUsb
+            $port = Get-IntendedPort
+        }
+        try {
+            Invoke-Logged -Name 'flash_id' -LogPath $idLog -Action {
+                & $python $esptool --chip esp32s3 --port $port flash_id
+            }
+            $idText = Get-Content -Raw $idLog
+            $idOk = $idText -match '80:65:99:a0:3e:70' -and $idText -match '16MB'
+        } catch {
+            $idOk = $false
+        }
     }
-    $idText = Get-Content -Raw $idLog
-    if ($idText -notmatch '80:65:99:a0:3e:70' -or $idText -notmatch '16MB') {
+    if (-not $idOk) {
         throw 'flash_id did not match the known T-Display-S3-Pro'
     }
 
@@ -272,11 +293,23 @@ try {
     }
 
     $uploadHilLog = Join-Path $WorkDir 'hil-upload.log'
-    Invoke-Logged -Name 'hil upload' -LogPath $uploadHilLog -Action {
-        & $pio run -e lilygo-t-display-s3-pro-hil -t upload --upload-port $port
+    $hilHashOk = $false
+    for ($try = 1; $try -le 2 -and -not $hilHashOk; $try++) {
+        if ($try -gt 1) {
+            Reset-KnownBoardUsb
+            $port = Get-IntendedPort
+        }
+        try {
+            Invoke-Logged -Name 'hil upload' -LogPath $uploadHilLog -Action {
+                & $pio run -e lilygo-t-display-s3-pro-hil -t upload --upload-port $port
+            }
+            $hilUploadText = Get-Content -Raw $uploadHilLog
+            $hilHashOk = $hilUploadText -match 'Hash of data verified'
+        } catch {
+            $hilHashOk = $false
+        }
     }
-    $hilUploadText = Get-Content -Raw $uploadHilLog
-    if ($hilUploadText -notmatch 'Hash of data verified') {
+    if (-not $hilHashOk) {
         throw 'HIL upload did not verify the flash hash'
     }
     $hilUploaded = $true
@@ -285,6 +318,11 @@ try {
     $hilTranscript = Join-Path $WorkDir 'hil-transcript.txt'
     & $python $serialTool --port $port --mode hil --transcript $hilTranscript
     if ($LASTEXITCODE -ne 0) {
+        Reset-KnownBoardUsb
+        $port = Get-IntendedPort
+        & $python $serialTool --port $port --mode hil --transcript $hilTranscript
+    }
+    if ($LASTEXITCODE -ne 0) {
         throw "HIL serial regression exit $LASTEXITCODE"
     }
     if ($Live) {
@@ -292,6 +330,16 @@ try {
         $liveRun = Invoke-PythonStdin -Script $serialTool -Arguments @(
             '--port', $port, '--mode', 'live', '--transcript', $liveTranscript, '--secret-stdin'
         ) -StdinText $script:liveSecretJson
+        if ($liveRun.ExitCode -ne 0) {
+            $firstLive = Join-Path $WorkDir 'live-transcript-attempt1.txt'
+            if (Test-Path -LiteralPath $liveTranscript) {
+                Copy-Item -LiteralPath $liveTranscript -Destination $firstLive -Force
+            }
+            Start-Sleep -Seconds 3
+            $liveRun = Invoke-PythonStdin -Script $serialTool -Arguments @(
+                '--port', $port, '--mode', 'live', '--transcript', $liveTranscript, '--secret-stdin'
+            ) -StdinText $script:liveSecretJson
+        }
         if ($liveRun.ExitCode -ne 0) {
             throw "live serial regression exit $($liveRun.ExitCode)"
         }
@@ -327,11 +375,28 @@ try {
         try {
             if (-not $port) { throw 'Production restore has no discovered port' }
             $restoreLog = Join-Path $WorkDir 'production-restore.log'
-            Invoke-Logged -Name 'production restore' -LogPath $restoreLog -Action {
-                & $pio run -e lilygo-t-display-s3-pro -t upload --upload-port $port
+            $restored = $false
+            for ($try = 1; $try -le 3 -and -not $restored; $try++) {
+                if ($try -gt 1) {
+                    Start-Sleep -Seconds 2
+                    try {
+                        Reset-KnownBoardUsb
+                        $port = Get-IntendedPort
+                    } catch {
+                        Write-Step 'USB_REENUM_FAIL'
+                    }
+                }
+                try {
+                    Invoke-Logged -Name 'production restore' -LogPath $restoreLog -Action {
+                        & $pio run -e lilygo-t-display-s3-pro -t upload --upload-port $port
+                    }
+                    $restoreText = Get-Content -Raw $restoreLog
+                    $restored = $restoreText -match 'Hash of data verified'
+                } catch {
+                    $restored = $false
+                }
             }
-            $restoreText = Get-Content -Raw $restoreLog
-            if ($restoreText -notmatch 'Hash of data verified') {
+            if (-not $restored) {
                 throw 'Production restore did not verify the flash hash'
             }
             Start-Sleep -Seconds 2

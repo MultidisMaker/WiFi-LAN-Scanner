@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AppActions.h"
+#include "InventoryStore.h"
 #include "ScannerController.h"
 #include "UiPress.h"
 #include "WifiService.h"
@@ -10,6 +11,8 @@ class ScannerUi {
   void begin(WifiService& wifi, ScannerController& scanner);
   void loop();
   void captureState(AppState& out) const;
+  // Touch dispatch and USB Remote both end here. Remote cannot inject keystrokes.
+  bool applyRemote(AppAction action, int rowOffset);
 
  private:
   WifiService* wifi_ = nullptr;
@@ -29,6 +32,8 @@ class ScannerUi {
   int drawnObserved_ = -1;
   int drawnProcessed_ = -1;
   bool drawnHosts_ = false;
+  InventoryStoreStatus drawnStore_ = InventoryStoreStatus::Unavailable;
+  char drawnPath_[64] = {};
   bool force_ = true;
 
   void draw(bool full);

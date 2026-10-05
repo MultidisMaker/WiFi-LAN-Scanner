@@ -8,12 +8,14 @@
 #include "AppActions.h"
 #include "BoardConfig.h"
 #include "DisplayBoard.h"
+#include "InventoryStore.h"
 #include "NameRecord.h"
 #include "NetMath.h"
 #include "Oui.h"
 #include "NetworkRange.h"
 #include "TouchBoard.h"
 #include "UiModel.h"
+#include "UiStatus.h"
 
 namespace {
 
@@ -120,8 +122,8 @@ int gatherControls(UiControl* out, int cap, const WifiService& wifi, const Scann
     }
   } else if (snapshot.phase == UiPhase::Home) {
     snapshot.showDashboard = true;
-    snprintf(snapshot.progressLabel, sizeof(snapshot.progressLabel), "%s %u/%u", scanStateName(scanner.state()),
-             scanner.processedCount(), scanner.candidateCount());
+    formatScanCard(snapshot.progressLabel, sizeof(snapshot.progressLabel), scanner.state(),
+                   wifi.phase() == WifiPhase::Connected, scanner.processedCount(), scanner.candidateCount());
     const unsigned long seconds = static_cast<unsigned long>(scanner.elapsedMs() / 1000UL);
     if (scanner.hasCurrent()) {
       char current[16];
@@ -201,8 +203,17 @@ void ScannerUi::drawChrome() {
   if (showingHosts_ && wifi_->phase() != WifiPhase::Results && wifi_->phase() != WifiPhase::Password) {
     textLine(gfx, 8, 8, 2, CYAN, "Hosts");
     char line[40];
-    snprintf(line, sizeof(line), "Observed %u", scanner_->observedCount());
+    snprintf(line, sizeof(line), "Observed %u via ARP", scanner_->observedCount());
     textLine(gfx, 8, 28, 1, WHITE, line);
+    char panel[40];
+    if (formatPersistPanel(panel, sizeof(panel), lastInventoryStore())) {
+      const InventoryStoreStatus status = lastInventoryStore().status;
+      const uint16_t ink = status == InventoryStoreStatus::Stored ? GREEN
+                           : status == InventoryStoreStatus::Failed ? RED
+                           : status == InventoryStoreStatus::Absent ? ORANGE
+                                                                    : DARKGREY;
+      textLine(gfx, 8, 462, 1, ink, panel);
+    }
     return;
   }
   if (wifi_->phase() == WifiPhase::Results) {
@@ -221,7 +232,12 @@ void ScannerUi::drawChrome() {
     return;
   }
 
-  textLine(gfx, 8, 8, 2, CYAN, "LAN Scanner");
+  textLine(gfx, 8, 8, 2, CYAN, "WiFi LAN");
+  char card[24];
+  if (formatScanCard(card, sizeof(card), scanner_->state(), wifi_->phase() == WifiPhase::Connected,
+                     scanner_->processedCount(), scanner_->candidateCount())) {
+    textLine(gfx, 8, 26, 1, CYAN, card);
+  }
   textLine(gfx, 8, 36, 1, WHITE, wifi_->statusText());
   if (wifi_->hasSavedNetwork()) {
     char line[40];
@@ -264,11 +280,24 @@ void ScannerUi::drawChrome() {
       textLine(gfx, 8, 216, 1, ORANGE, "Range unavailable");
     }
   } else {
-    textLine(gfx, 8, 160, 1, DARKGREY, "Range waits for Wi-Fi");
+    char banner[64];
+    if (formatScanBanner(banner, sizeof(banner), scanner_->state(), false, scanner_->processedCount(),
+                         scanner_->candidateCount(), scanner_->observedCount())) {
+      textLine(gfx, 8, 160, 1, DARKGREY, banner);
+    }
   }
 
+  char panel[40];
+  if (formatPersistPanel(panel, sizeof(panel), lastInventoryStore())) {
+    const InventoryStoreStatus status = lastInventoryStore().status;
+    const uint16_t ink = status == InventoryStoreStatus::Stored ? GREEN
+                         : status == InventoryStoreStatus::Failed ? RED
+                         : status == InventoryStoreStatus::Absent ? ORANGE
+                                                                  : DARKGREY;
+    textLine(gfx, 8, 462, 1, ink, panel);
+  }
   if (!deviceTouch().ready()) {
-    textLine(gfx, 8, 464, 1, RED, "Touch controller absent");
+    textLine(gfx, 8, 472, 1, RED, "Touch controller absent");
   }
 }
 
@@ -305,6 +334,8 @@ void ScannerUi::draw(bool full) {
   drawnObserved_ = scanner_->observedCount();
   drawnProcessed_ = scanner_->processedCount();
   drawnHosts_ = showingHosts_;
+  drawnStore_ = lastInventoryStore().status;
+  snprintf(drawnPath_, sizeof(drawnPath_), "%s", lastInventoryStore().path);
   lastDrawMs_ = millis();
   force_ = false;
 }
@@ -330,6 +361,21 @@ void ScannerUi::dispatch(int id) {
     return;
   }
 
+  int row = -1;
+  const AppAction action = actionFromControl(id, &row);
+  if (action == AppAction::None) {
+    return;
+  }
+  applyRemote(action, row);
+}
+
+bool ScannerUi::applyRemote(AppAction action, int rowOffset) {
+  if (wifi_ == nullptr || scanner_ == nullptr || action == AppAction::None) {
+    return false;
+  }
+  if (action == AppAction::SelectRow && (rowOffset < 0 || rowOffset > 5)) {
+    return false;
+  }
   AppView view;
   view.showingHosts = showingHosts_;
   view.resultsOpen = !showingHosts_ && wifi_->phase() == WifiPhase::Results;
@@ -337,11 +383,7 @@ void ScannerUi::dispatch(int id) {
   view.keyboardPage = keyboardPage_;
   view.resultCount = wifi_->resultCount();
   view.observedCount = scanner_->observedCount();
-  int row = -1;
-  const AppAction action = actionFromControl(id, &row);
-  if (action == AppAction::SelectRow) {
-    view.rowOffset = row;
-  }
+  view.rowOffset = rowOffset;
   AppHooks hooks;
   hooks.findNetworks = hookFind;
   hooks.forgetNetwork = hookForget;
@@ -355,6 +397,8 @@ void ScannerUi::dispatch(int id) {
   showingHosts_ = view.showingHosts;
   page_ = view.page;
   keyboardPage_ = view.keyboardPage;
+  force_ = true;
+  return true;
 }
 
 void ScannerUi::captureState(AppState& out) const {
@@ -415,7 +459,9 @@ void ScannerUi::loop() {
     force_ = true;
   }
 
-  const bool contentChanged = force_ || wifi_->phase() != drawnPhase_ || scanner_->state() != drawnScan_ ||
+  const InventoryStoreResult& storedNow = lastInventoryStore();
+  const bool storeChanged = storedNow.status != drawnStore_ || strcmp(storedNow.path, drawnPath_) != 0;
+  const bool contentChanged = force_ || storeChanged || wifi_->phase() != drawnPhase_ || scanner_->state() != drawnScan_ ||
                               wifi_->shiftOn() != drawnShift_ || wifi_->passwordLength() != drawnPassLen_ ||
                               wifi_->hasSavedNetwork() != drawnSaved_ || page_ != drawnPage_ ||
                               keyboardPage_ != drawnKeyboard_ || showingHosts_ != drawnHosts_ ||

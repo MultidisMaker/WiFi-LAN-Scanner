@@ -15,6 +15,7 @@
 #include "ScannerUi.h"
 #include "TouchBoard.h"
 #include "UiPress.h"
+#include "UsbRemote.h"
 #include "WifiService.h"
 #if WLS_TEST_MODE
 #include "HilConsole.h"
@@ -93,11 +94,16 @@ void deviceUiLoop() { gUi.loop(); }
 #endif
 
 void setup() {
+  // The USB-CDC default queue is 256 bytes. A v1 frame may be 320 bytes
+  // before its newline, so both queues have to hold one maximum frame.
+  const size_t usbRx = Serial.setRxBufferSize(512);
+  const size_t usbTx = Serial.setTxBufferSize(512);
   Serial.begin(115200);
   // A full USB-CDC transmit buffer otherwise waits forever and setup never
   // reaches the ready line on the HIL image.
   Serial.setTxTimeoutMs(1000);
   delay(200);
+  Serial.printf("WLS usb-cdc rx=%u tx=%u\n", static_cast<unsigned>(usbRx), static_cast<unsigned>(usbTx));
   Serial.println("WLS boot WiFi-LAN-Scanner foundation");
   const bool displayOk = gDisplay.begin();
   Serial.printf("WLS display=%s geometry=%dx%d expected=%dx%d\n", displayOk ? "ok" : "fail", gDisplay.width(),
@@ -116,6 +122,7 @@ void setup() {
   gScanner.setBackend(&gArp);
   bindInventoryScanner(&gScanner);
   gUi.begin(gWifi, gScanner);
+  usbRemoteBind(&gUi, &gScanner);
   reportPsramProbe();
   reportResource("ready");
   Serial.println("WLS ready discovery=local-arp");
@@ -134,5 +141,7 @@ void loop() {
   gUi.loop();
 #if WLS_TEST_MODE
   hilPoll();
+#else
+  usbRemotePoll();
 #endif
 }

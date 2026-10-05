@@ -1,6 +1,6 @@
 # WiFi LAN Scanner architecture
 
-This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, offline manufacturer enrichment, and schema-1 CSV persistence for hosts that discovery already found. Service enumeration and a Remote transport remain deferred.
+This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, offline manufacturer enrichment, schema-1 CSV persistence for hosts that discovery already found, and USB Remote protocol v1 on that same action seam. Service enumeration and Wi-Fi Remote transport remain deferred.
 
 ## Hardware abstraction
 
@@ -62,9 +62,9 @@ Actionable controls share one geometry list (`collectUiControls` in `src/UiModel
 
 ## Inventory export
 
-`include/InventoryExport.h` writes schema-1 CSV for hosts the scan already observed. The directory is `/LANScanner/scans/`. A publish writes `path.tmp` and renames it to the final name. Unanswered addresses are omitted. Local, group, unknown, and unavailable manufacturer states stay explicit, and a label is stored only for a known global assignment. The CSV has no passphrase column. See `docs/persistence.md`.
+`include/InventoryExport.h` writes schema-1 CSV for hosts the scan already observed. The directory is `/WiFi-LAN-Scanner/scans/`. A publish writes `path.tmp` and renames it to the final name. Unanswered addresses are omitted. Local, group, unknown, and unavailable manufacturer states stay explicit, and a label is stored only for a known global assignment. The CSV has no passphrase column. See `docs/persistence.md`.
 
-`storeInventoryOnSd` streams that CSV to `/LANScanner/scans/scan-########.csv` on the device. The host build has no card and still returns `contract-unproven`. A missing card stays `media-absent` and does not format the socket. The synthetic `PERSIST` command checks the RAM serializer only and does not mount the card. `SDPROBE` on the test image does.
+`storeInventoryOnSd` streams that CSV to `/WiFi-LAN-Scanner/scans/scan-########.csv` on the device. The host build has no card and still returns `contract-unproven`. A missing card stays `media-absent` and does not format the socket. The synthetic `PERSIST` command checks the RAM serializer only and does not mount the card. `SDPROBE` on the test image does. An older `/LANScanner/scans/` directory is left in place when it is present.
 
 ## Resource telemetry
 
@@ -72,7 +72,7 @@ Actionable controls share one geometry list (`collectUiControls` in `src/UiModel
 
 ## Remote-ready actions
 
-`include/AppActions.h` is the only place a touch control changes the scanner or the host-list view. `ScannerUi::dispatch` translates a control id into an `AppAction` and calls `applyAppAction`. Host tests call that same function directly. `fillAppState` copies the authoritative scanner and view into a passphrase-free snapshot. A future Remote client should send these actions and read this snapshot. It should not read the framebuffer. No USB, Wi-Fi, TLS, pairing, or Remote application is implemented, and that application is not in this repository.
+`include/AppActions.h` is the only place a touch control or a USB Remote action changes the scanner or the host-list view. `ScannerUi::dispatch` translates a control id into an `AppAction` and calls `applyAppAction`. USB Remote protocol v1 calls that same function. Host tests call it directly. `fillAppState` copies the authoritative scanner and view into a passphrase-free snapshot. Remote `STATE` is that snapshot. It does not read the framebuffer. The framed USB transport is documented in `docs/remote-v1.md`. Wi-Fi transport, TLS, pairing, and a proprietary Remote application are not in this repository.
 
 Host-row control ids are 200 through 205. Previous, Next, and Back keep their own ids.
 
@@ -80,6 +80,6 @@ Host-row control ids are 200 through 205. Previous, Next, and Back keep their ow
 
 - ICMP, TCP, UDP, mDNS service browse, SSDP, and NetBIOS
 - JSON inventory export
-- Wi-Fi or USB Remote transport and the proprietary Remote application
+- Wi-Fi Remote transport, TLS, pairing, and the proprietary Remote application
 - T-Display-S3-Pro pins that this firmware does not use
 - A technician-entered saved network is still required before the production UI can scan; the automated live check is test-image only

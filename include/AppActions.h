@@ -5,8 +5,8 @@
 #include "ScannerController.h"
 #include "UiModel.h"
 
-// Logical actions shared by the touchscreen and a future Remote client.
-// No USB, Wi-Fi, or TLS transport is attached to this dispatcher.
+// Logical actions shared by the touchscreen and USB Remote protocol v1.
+// Wi-Fi transport, TLS, and the proprietary Remote application are not attached.
 enum class AppAction : uint8_t {
   None = 0,
   FindNetworks,

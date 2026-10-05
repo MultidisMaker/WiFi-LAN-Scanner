@@ -64,21 +64,185 @@ def read_lines(port, deadline, transcript):
     return found
 
 
-def wait_for(port, predicate, timeout, transcript):
+def contains_legacy_scan_dir(transcript):
+    return any("/LANScanner/scans/" in line for line in transcript)
+
+
+def read_until(port, predicate, timeout, transcript, secret=None, pending=b""):
     deadline = time.time() + timeout
-    pending = b""
     while time.time() < deadline:
-        chunk = port.read(port.in_waiting or 1)
-        if not chunk:
-            continue
-        pending += chunk
+        if b"\n" not in pending:
+            chunk = port.read(port.in_waiting or 1)
+            if not chunk:
+                continue
+            pending += chunk
         while b"\n" in pending:
             raw, pending = pending.split(b"\n", 1)
             line = raw.decode("ascii", "replace").replace("\r", "").strip()
+            if secret and secret in line:
+                transcript.append("! secret-line-suppressed")
+                return None, b""
             transcript.append(line)
             if predicate(line):
-                return line
-    return None
+                return line, pending
+    return None, pending
+
+
+def wait_for(port, predicate, timeout, transcript):
+    line, _pending = read_until(port, predicate, timeout, transcript)
+    return line
+
+
+def resource_line_healthy(line):
+    if not line.startswith("WLS resource "):
+        return False
+    fields = {}
+    for token in line.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        fields[key] = value
+    try:
+        heap = int(fields["heap"])
+        block = int(fields["block"])
+        psram = int(fields["psram"])
+        free_psram = int(fields["freePsram"])
+    except (KeyError, ValueError):
+        return False
+    return heap > 0 and block > 0 and psram > 0 and free_psram > 0 and free_psram <= psram
+
+
+def result_count(line):
+    marker = '"count":'
+    if marker not in line:
+        return -1
+    digits = []
+    for char in line.split(marker, 1)[1]:
+        if char.isdigit():
+            digits.append(char)
+        else:
+            break
+    if not digits:
+        return -1
+    return int("".join(digits))
+
+
+def send_frame(port, body, transcript):
+    wire = "@R1 " + body
+    transcript.append("> " + wire)
+    port.write((wire + "\n").encode("ascii"))
+    port.flush()
+
+
+def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
+    def exact(expected):
+        return lambda line, expected=expected: line == expected
+
+    def step(body, predicate, timeout):
+        nonlocal pending
+        send_frame(port, body, transcript)
+        line, pending = read_until(port, predicate, timeout, transcript, secret=secret, pending=pending)
+        return line
+
+    if step('{"v":1,"op":"HELLO"}', exact('@R1 {"v":1,"op":"HELLO_ACK","ok":1,"link":"usb","support":1}'), 4) is None:
+        transcript.append("! remote-hello")
+        return False, pending
+    if step('{"v":1,"op":"HELLO"}', exact('@R1 {"v":1,"op":"ERR","reason":"session"}'), 4) is None:
+        transcript.append("! remote-session")
+        return False, pending
+
+    def state_ok(line):
+        if not line.startswith('@R1 {"v":1,"op":"STATE"'):
+            return False
+        lowered = line.lower()
+        return "password" not in lowered and "psk" not in lowered and "passphrase" not in lowered
+
+    if step('{"v":1,"op":"GET_STATE"}', state_ok, 4) is None:
+        transcript.append("! remote-state")
+        return False, pending
+
+    if live_ip is not None:
+        start = len(transcript)
+        end = step('{"v":1,"op":"GET_RESULTS"}', lambda line: line.startswith("@R1 ") and '"op":"RESULT_END"' in line, 15)
+        if end is None or result_count(end) < 1:
+            transcript.append("! remote-results")
+            return False, pending
+        if not any(('"ip":"%s"' % live_ip) in line for line in transcript[start:]):
+            transcript.append("! remote-results-ip")
+            return False, pending
+        actions = ("hosts", "back", "pause")
+    else:
+        actions = ("start", "pause", "resume", "stop", "reset")
+
+    for name in actions:
+        expected = '@R1 {"v":1,"op":"ACTION_RESULT","name":"%s","ok":1}' % name
+        if step('{"v":1,"op":"ACTION","name":"%s"}' % name, exact(expected), 4) is None:
+            transcript.append("! remote-action " + name)
+            return False, pending
+
+    if live_ip is None:
+        empty = step('{"v":1,"op":"GET_RESULTS"}', exact('@R1 {"v":1,"op":"RESULT_END","count":0}'), 4)
+        if empty is None:
+            transcript.append("! remote-empty-results")
+            return False, pending
+
+    if step("{", exact('@R1 {"v":1,"op":"ERR","reason":"malformed"}'), 4) is None:
+        transcript.append("! remote-malformed")
+        return False, pending
+    if step('{"v":1,"op":"NOPE"}', exact('@R1 {"v":1,"op":"ERR","reason":"unknown"}'), 4) is None:
+        transcript.append("! remote-unknown")
+        return False, pending
+    if step("A" * 360, exact('@R1 {"v":1,"op":"ERR","reason":"oversize"}'), 4) is None:
+        transcript.append("! remote-oversize")
+        return False, pending
+    if step('{"v":1,"op":"PING","id":3}', exact('@R1 {"v":1,"op":"PONG","id":3}'), 4) is None:
+        transcript.append("! remote-recover")
+        return False, pending
+    if step('{"v":1,"op":"GOODBYE"}', exact('@R1 {"v":1,"op":"GOODBYE","ok":1}'), 4) is None:
+        transcript.append("! remote-goodbye")
+        return False, pending
+    if step('{"v":1,"op":"GET_STATE"}', exact('@R1 {"v":1,"op":"ERR","reason":"closed"}'), 4) is None:
+        transcript.append("! remote-closed")
+        return False, pending
+
+    if live_ip is not None:
+        return True, pending
+
+    transcript.append("> PING")
+    port.write(b"PING\n")
+    port.flush()
+    pong, pending = read_until(port, lambda line: line == "WLS-HIL PONG", 4, transcript, pending=pending)
+    if pong is None:
+        transcript.append("! remote-hil-pong")
+        return False, pending
+    transcript.append("> UI home")
+    port.write(b"UI home\n")
+    port.flush()
+    home, pending = read_until(port, lambda line: line == "WLS-HIL UI ok", 4, transcript, pending=pending)
+    if home is None:
+        transcript.append("! remote-ui-home")
+        return False, pending
+    transcript.append("> TAP 20 80 40 80")
+    port.write(b"TAP 20 80 40 80\n")
+    port.flush()
+    tap, pending = read_until(
+        port,
+        lambda line: line == "WLS-HIL TAP hit=find fire=1 cancel=0 shown=1 face=pressed",
+        4,
+        transcript,
+        pending=pending,
+    )
+    if tap is None:
+        transcript.append("! remote-tap")
+        return False, pending
+    transcript.append("> RESOURCES")
+    port.write(b"RESOURCES\n")
+    port.flush()
+    resources, pending = read_until(port, lambda line: line == "WLS-HIL RESOURCES pass=1", 8, transcript, pending=pending)
+    if resources is None or not any(resource_line_healthy(line) for line in transcript):
+        transcript.append("! remote-resources")
+        return False, pending
+    return True, pending
 
 
 def run_hil(port, transcript):
@@ -147,6 +311,12 @@ def run_hil(port, transcript):
             break
     if not ok:
         return False
+    if not any(line.startswith("WLS-HIL PERSIST path=/WiFi-LAN-Scanner/scans/scan-") for line in transcript):
+        transcript.append("! persist-path")
+        return False
+    if contains_legacy_scan_dir(transcript):
+        transcript.append("! legacy-scan-path")
+        return False
     transcript.append("> SDPROBE")
     port.write(b"SDPROBE\n")
     port.flush()
@@ -156,18 +326,24 @@ def run_hil(port, transcript):
         return False
     if got == "WLS-HIL SDPROBE result=absent display=ok":
         transcript.append("SD_HIL=absent")
-        return True
-    tokens = got.split()
-    if (
-        got.startswith("WLS-HIL SDPROBE result=stored ")
-        and "match=1" in tokens
-        and "removed=1" in tokens
-        and "display=ok" in tokens
-    ):
+    else:
+        tokens = got.split()
+        if not (
+            got.startswith("WLS-HIL SDPROBE result=stored ")
+            and "match=1" in tokens
+            and "removed=1" in tokens
+            and "display=ok" in tokens
+            and "path=/WiFi-LAN-Scanner/scans/a011-wls-sdhil.csv" in tokens
+        ):
+            transcript.append("! sdprobe " + got)
+            return False
         transcript.append("SD_HIL=stored")
-        return True
-    transcript.append("! sdprobe " + got)
-    return False
+    remote_ok, _pending = exercise_remote(port, transcript)
+    if not remote_ok or contains_legacy_scan_dir(transcript):
+        if contains_legacy_scan_dir(transcript):
+            transcript.append("! legacy-scan-path")
+        return False
+    return True
 
 
 def run_boot(port, transcript):
@@ -233,14 +409,6 @@ def load_live_secret(from_stdin):
     return ssid, psk
 
 
-def remember_line(line, secret, transcript):
-    if secret and secret in line:
-        transcript.append("! secret-line-suppressed")
-        return False
-    transcript.append(line)
-    return True
-
-
 def run_live(port, transcript, from_stdin):
     ssid, psk = load_live_secret(from_stdin)
     ready = wait_for(port, lambda line: line == "WLS-HIL ready", 12, transcript)
@@ -256,35 +424,71 @@ def run_live(port, transcript, from_stdin):
     port.write(frame)
     del frame
     port.flush()
-    deadline = time.time() + 420
-    pending = b""
+    hold, pending = read_until(
+        port,
+        lambda line: line.startswith("WLS-HIL LIVE ") or "Guru Meditation" in line or "panic'ed" in line,
+        420,
+        transcript,
+        secret=psk,
+    )
+    if hold is None or not hold.startswith("WLS-HIL LIVE hold=") or contains_legacy_scan_dir(transcript):
+        if contains_legacy_scan_dir(transcript):
+            transcript.append("! legacy-scan-path")
+        return False
     net_ok = False
-    live_ok = False
-    clean = True
-    while time.time() < deadline:
-        chunk = port.read(port.in_waiting or 1)
-        if not chunk:
-            continue
-        pending += chunk
-        while b"\n" in pending:
-            raw, pending = pending.split(b"\n", 1)
-            line = raw.decode("ascii", "replace").replace("\r", "").strip()
-            if not remember_line(line, psk, transcript):
-                clean = False
-                continue
-            tokens = line.split()
-            if line.startswith("WLS-HIL NET ") and "ssid=TFMiddle" in tokens and "inside=1" in tokens and "cap=256" in tokens:
-                for token in tokens:
-                    if token.startswith("candidates="):
-                        number = token.split("=", 1)[1]
-                        if number.isdigit() and 1 <= int(number) <= 256:
-                            net_ok = True
-            if "source=dns" in tokens:
-                clean = False
-            if line.startswith("WLS-HIL LIVE "):
-                live_ok = "pass=1" in tokens
-                return net_ok and live_ok and clean
-    return False
+    persist_path = False
+    persist_stored = False
+    observed_ip = None
+    seen = 0
+    for line in transcript:
+        tokens = line.split()
+        if "source=dns" in tokens:
+            transcript.append("! live-dns")
+            return False
+        if line.startswith("WLS-HIL NET ") and "ssid=TFMiddle" in tokens and "inside=1" in tokens and "cap=256" in tokens:
+            for token in tokens:
+                if token.startswith("candidates="):
+                    number = token.split("=", 1)[1]
+                    if number.isdigit() and 1 <= int(number) <= 256:
+                        net_ok = True
+        if line.startswith("WLS-HIL HOST "):
+            for token in tokens:
+                if token.startswith("ip=") and token != "ip=none" and observed_ip is None:
+                    observed_ip = token.split("=", 1)[1]
+        if line.startswith("WLS sd path=/WiFi-LAN-Scanner/scans/scan-"):
+            persist_path = True
+        if line == "WLS-HIL PERSIST live=stored":
+            persist_stored = True
+        if line.startswith("WLS-HIL LIVE hold="):
+            for token in tokens:
+                if token.startswith("seen=") and token.split("=", 1)[1].isdigit():
+                    seen = int(token.split("=", 1)[1])
+    if not net_ok or not persist_path or not persist_stored or observed_ip is None or seen < 1:
+        transcript.append("! live-before-remote")
+        return False
+    remote_ok, pending = exercise_remote(port, transcript, pending=pending, live_ip=observed_ip, secret=psk)
+    if not remote_ok:
+        return False
+    transcript.append("> LIVECLOSE")
+    port.write(b"LIVECLOSE\n")
+    port.flush()
+    closed, _pending = read_until(
+        port,
+        lambda line: line.startswith("WLS-HIL LIVE "),
+        30,
+        transcript,
+        secret=psk,
+        pending=pending,
+    )
+    if closed is None or contains_legacy_scan_dir(transcript):
+        if contains_legacy_scan_dir(transcript):
+            transcript.append("! legacy-scan-path")
+        return False
+    after_reset = any(line.startswith("WLS resource phase=after-reset ") and resource_line_healthy(line) for line in transcript)
+    if not after_reset:
+        transcript.append("! live-resource")
+        return False
+    return "pass=1" in closed.split()
 
 
 def main():
@@ -301,6 +505,11 @@ def main():
         try:
             if args.mode == "hil":
                 ok = run_hil(port, transcript)
+                if not ok:
+                    transcript.append("! hil-retry")
+                    hard_reset(port)
+                    set_dtr(port, True)
+                    ok = run_hil(port, transcript)
             elif args.mode == "live":
                 ok = run_live(port, transcript, args.secret_stdin)
             else:

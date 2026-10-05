@@ -110,7 +110,7 @@ bool inventoryScanPath(char* out, size_t cap, uint32_t sequence) {
   if (out == nullptr || cap == 0) {
     return false;
   }
-  const int n = snprintf(out, cap, "/LANScanner/scans/scan-%08lu.csv", static_cast<unsigned long>(sequence));
+  const int n = snprintf(out, cap, "/WiFi-LAN-Scanner/scans/scan-%08lu.csv", static_cast<unsigned long>(sequence));
   return n > 0 && static_cast<size_t>(n) < cap;
 }
 

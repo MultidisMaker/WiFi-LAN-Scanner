@@ -29,6 +29,7 @@
 #include "ScannerController.h"
 #include "UiModel.h"
 #include "UiPress.h"
+#include "UsbRemote.h"
 
 namespace {
 UiSnapshot gSnapshot;
@@ -36,7 +37,7 @@ ScannerController gHilScanner;
 FakeDiscoveryBackend gHilBackend;
 HostInventory gHilDuplicate;
 CandidatePlan gLivePlan;
-char gLine[96];
+char gLine[416];
 size_t gUsed = 0;
 bool gOverflow = false;
 char gExportCsv[2048];
@@ -159,6 +160,19 @@ bool inventoryUnique(const ScannerController& scanner) {
   }
   return true;
 }
+
+struct LiveHold {
+  bool armed = false;
+  bool pauseOk = false;
+  bool resumeOk = false;
+  bool completeOk = false;
+  bool dupOk = false;
+  bool gatewaySeen = false;
+  uint16_t seen = 0;
+  NetFacts facts;
+};
+
+LiveHold gLiveHold;
 
 void hilLive() {
   uint8_t ssidLen = 0;
@@ -336,8 +350,26 @@ void hilLive() {
   }
   Serial.printf("WLS-HIL PERSIST live=%s\n", liveLabel);
 
+  gLiveHold = LiveHold();
+  gLiveHold.armed = true;
+  gLiveHold.pauseOk = pauseOk;
+  gLiveHold.resumeOk = resumeOk;
+  gLiveHold.completeOk = completeOk;
+  gLiveHold.dupOk = dupOk;
+  gLiveHold.gatewaySeen = gatewaySeen;
+  gLiveHold.seen = seen;
+  gLiveHold.facts = facts;
+  Serial.printf("WLS-HIL LIVE hold=1 seen=%u\n", seen);
+}
+
+void hilLiveClose() {
+  if (!gLiveHold.armed) {
+    Serial.println("WLS-HIL LIVE pass=0 pause=0 resume=0 stop=0 complete=0 reset=0 seen=0 dup=0 gatewaySeen=0");
+    return;
+  }
+  ScannerController& scanner = deviceScanner();
   scanner.reset();
-  scanner.armConnectedFacts(facts);
+  scanner.armConnectedFacts(gLiveHold.facts);
   scanner.start();
   const bool stopArmed = waitUntilProbe(scanner);
   const uint16_t partial = scanner.observedCount();
@@ -355,11 +387,14 @@ void hilLive() {
   reportResource("after-reset");
   const bool resetOk = scanner.state() == ScanState::Idle && scanner.observedCount() == 0 && !scanner.hasCurrent();
   forgetVolatileSta();
-  const bool livePass = pauseOk && resumeOk && stopOk && completeOk && resetOk && dupOk && seen > 0;
+  const bool livePass = gLiveHold.pauseOk && gLiveHold.resumeOk && stopOk && gLiveHold.completeOk && resetOk &&
+                        gLiveHold.dupOk && gLiveHold.seen > 0;
   Serial.printf(
       "WLS-HIL LIVE pass=%d pause=%d resume=%d stop=%d complete=%d reset=%d seen=%u dup=%d gatewaySeen=%d\n",
-      livePass ? 1 : 0, pauseOk ? 1 : 0, resumeOk ? 1 : 0, stopOk ? 1 : 0, completeOk ? 1 : 0, resetOk ? 1 : 0, seen,
-      dupOk ? 1 : 0, gatewaySeen ? 1 : 0);
+      livePass ? 1 : 0, gLiveHold.pauseOk ? 1 : 0, gLiveHold.resumeOk ? 1 : 0, stopOk ? 1 : 0,
+      gLiveHold.completeOk ? 1 : 0, resetOk ? 1 : 0, gLiveHold.seen, gLiveHold.dupOk ? 1 : 0,
+      gLiveHold.gatewaySeen ? 1 : 0);
+  gLiveHold.armed = false;
 }
 
 void hilSelf() {
@@ -1010,6 +1045,10 @@ void hilActions() {
 }
 
 void hilDispatch(const char* line) {
+  if (strncmp(line, "@R1 ", 4) == 0) {
+    usbRemoteSubmitLine(line);
+    return;
+  }
   if (strcmp(line, "PING") == 0) {
     Serial.println("WLS-HIL PONG");
   } else if (strcmp(line, "SELF") == 0) {
@@ -1032,12 +1071,14 @@ void hilDispatch(const char* line) {
     hilActions();
   } else if (strcmp(line, "PERSIST") == 0) {
     hilPersist();
+  } else if (strcmp(line, "LIVECLOSE") == 0) {
+    hilLiveClose();
   } else if (strcmp(line, "SDPROBE") == 0) {
     const SdProbeResult probe = probeSdMedia();
     if (strcmp(probe.result, "stored") == 0) {
-      Serial.printf("WLS-HIL SDPROBE result=stored bytes=%lu match=%d removed=%d display=%s\n",
+      Serial.printf("WLS-HIL SDPROBE result=stored bytes=%lu match=%d removed=%d display=%s path=%s\n",
                     static_cast<unsigned long>(probe.bytes), probe.match ? 1 : 0, probe.removed ? 1 : 0,
-                    probe.displayOk ? "ok" : "fail");
+                    probe.displayOk ? "ok" : "fail", probe.path != nullptr ? probe.path : "");
     } else if (strcmp(probe.result, "absent") == 0) {
       Serial.println("WLS-HIL SDPROBE result=absent display=ok");
     } else {
@@ -1058,6 +1099,10 @@ void hilDispatch(const char* line) {
 }
 
 void hilPoll() {
+  if (usbRemoteStreaming()) {
+    usbRemotePullOne();
+    return;
+  }
   while (Serial.available() > 0) {
     const int raw = Serial.read();
     if (raw < 0) {
@@ -1076,9 +1121,14 @@ void hilPoll() {
       continue;
     }
     if (gOverflow) {
+      const bool remote = gUsed >= 4 && memcmp(gLine, "@R1 ", 4) == 0;
       gUsed = 0;
       gOverflow = false;
-      Serial.println("WLS-HIL ERR line");
+      if (remote) {
+        usbRemoteOversize();
+      } else {
+        Serial.println("WLS-HIL ERR line");
+      }
       continue;
     }
     gLine[gUsed] = '\0';

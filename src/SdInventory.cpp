@@ -18,14 +18,20 @@ const ScannerController* gScanner = nullptr;
 bool gSpiReady = false;
 bool gMounted = false;
 bool gAbsent = false;
+bool gLegacyReported = false;
 uint32_t gNextSequence = 1;
 char gPreamble[512];
 char gRowLine[384];
 
-InventoryStoreResult makeResult(InventoryStoreStatus status, const char* detail) {
+InventoryStoreResult makeResult(InventoryStoreStatus status, const char* detail, const char* path = nullptr) {
   InventoryStoreResult result;
   result.status = status;
   result.detail = detail;
+  result.path[0] = '\0';
+  if (path != nullptr && path[0] != '\0') {
+    snprintf(result.path, sizeof(result.path), "%s", path);
+  }
+  rememberInventoryStore(result);
   return result;
 }
 
@@ -60,15 +66,20 @@ bool ensureMounted() {
     return false;
   }
   gMounted = true;
+  if (!gLegacyReported) {
+    gLegacyReported = true;
+    const bool legacy = SD.exists("/LANScanner/scans");
+    Serial.printf("WLS sd legacy=%s\n", legacy ? "present" : "absent");
+  }
   deselectBoth();
   return true;
 }
 
 bool ensureTree() {
-  if (!SD.exists("/LANScanner") && !SD.mkdir("/LANScanner")) {
+  if (!SD.exists("/WiFi-LAN-Scanner") && !SD.mkdir("/WiFi-LAN-Scanner")) {
     return false;
   }
-  if (!SD.exists("/LANScanner/scans") && !SD.mkdir("/LANScanner/scans")) {
+  if (!SD.exists("/WiFi-LAN-Scanner/scans") && !SD.mkdir("/WiFi-LAN-Scanner/scans")) {
     return false;
   }
   return true;
@@ -205,14 +216,15 @@ InventoryStoreResult storeInventoryOnSd() {
     return makeResult(InventoryStoreStatus::Failed, "readback");
   }
   Serial.println("WLS sd status=stored detail=stored");
-  return makeResult(InventoryStoreStatus::Stored, "stored");
+  Serial.printf("WLS sd path=%s\n", path);
+  return makeResult(InventoryStoreStatus::Stored, "stored", path);
 }
 
 #if WLS_TEST_MODE
 SdProbeResult probeSdMedia() {
   SdProbeResult probe;
-  static const char kBody[] = "# schema=1\n# probe=A010-SD-HIL\nip,mac,method,name,nameSource,macClass,ouiState,manufacturer\n";
-  static const char kPath[] = "/LANScanner/scans/a010-wls-sdhil.csv";
+  static const char kBody[] = "# schema=1\n# probe=A011-SD-HIL\nip,mac,method,name,nameSource,macClass,ouiState,manufacturer\n";
+  static const char kPath[] = "/WiFi-LAN-Scanner/scans/a011-wls-sdhil.csv";
   if (!ensureMounted()) {
     probe.displayOk = displayStillReady();
     deselectBoth();
@@ -317,6 +329,7 @@ SdProbeResult probeSdMedia() {
     probe.stage = "display";
     return probe;
   }
+  probe.path = kPath;
   probe.result = "stored";
   probe.stage = "stored";
   return probe;
