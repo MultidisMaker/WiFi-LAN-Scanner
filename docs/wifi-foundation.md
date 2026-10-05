@@ -40,4 +40,4 @@ Find networks, network rows, Back, Previous, Next, Forget, Start, Pause, Resume,
 
 ## Discovery boundary
 
-Local discovery sends one lwIP ARP request at a time on the directly connected station subnet and reads the ARP cache. It does not send ICMP, TCP, UDP, mDNS, SSDP, or NetBIOS, and it does not capture packets or write an inventory file. A host that does not answer is left out of the list rather than marked offline. Manufacturer text comes from a local OUI table after a MAC is already stored. That lookup does not transmit.
+Local discovery sends one lwIP ARP request at a time on the directly connected station subnet and reads the ARP cache. It does not send ICMP, TCP, UDP, mDNS, SSDP, or NetBIOS, and it does not capture packets. A host that does not answer is left out of the list rather than marked offline. Manufacturer text comes from a local OUI table after a MAC is already stored. That lookup does not transmit. A separate formatter can describe the positive observations as CSV. The probe path does not write that file, and the firmware does not mount an SD card.

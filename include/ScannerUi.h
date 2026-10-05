@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AppActions.h"
 #include "ScannerController.h"
 #include "UiPress.h"
 #include "WifiService.h"
@@ -8,6 +9,7 @@ class ScannerUi {
  public:
   void begin(WifiService& wifi, ScannerController& scanner);
   void loop();
+  void captureState(AppState& out) const;
 
  private:
   WifiService* wifi_ = nullptr;

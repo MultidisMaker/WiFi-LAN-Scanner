@@ -5,10 +5,12 @@
 #include "BoardConfig.h"
 #include "DisplayBoard.h"
 #include "LwipArpBackend.h"
+#include "InventoryStore.h"
 #include "MdnsEnricher.h"
 #include "NetMath.h"
 #include "OuiEnricher.h"
 #include "NetworkRange.h"
+#include "ResourceMeter.h"
 #include "ScannerController.h"
 #include "ScannerUi.h"
 #include "TouchBoard.h"
@@ -25,6 +27,44 @@ WifiService gWifi;
 ScannerController gScanner;
 LwipArpBackend gArp;
 ScannerUi gUi;
+
+struct ResourceGate {
+  ScanState previous = ScanState::Idle;
+  bool sawScan = false;
+  bool sawEnrich = false;
+};
+
+ResourceGate gResourceGate;
+
+void noteResourceMilestones(ScannerController& scanner) {
+  const ScanState now = scanner.state();
+  if (gResourceGate.previous != ScanState::Starting && now == ScanState::Starting) {
+    reportResource("before-scan");
+    gResourceGate.sawScan = false;
+    gResourceGate.sawEnrich = false;
+  }
+  if (now == ScanState::Scanning && !gResourceGate.sawScan) {
+    reportResource("scan");
+    gResourceGate.sawScan = true;
+  }
+  if (gResourceGate.previous != ScanState::Complete && now == ScanState::Complete) {
+    reportResource("after-scan");
+  }
+  const bool enrichIdle = now == ScanState::Complete && nameEnrichmentIdle(scanner) && ouiEnrichmentIdle(scanner);
+  if (enrichIdle && !gResourceGate.sawEnrich) {
+    reportResource("after-enrich");
+    reportResource("before-persist");
+    storeInventoryOnSd();
+    reportResource("after-persist");
+    gResourceGate.sawEnrich = true;
+  }
+  if (gResourceGate.previous != ScanState::Idle && now == ScanState::Idle) {
+    reportResource("after-reset");
+    gResourceGate.sawScan = false;
+    gResourceGate.sawEnrich = false;
+  }
+  gResourceGate.previous = now;
+}
 
 void armScannerFromStation() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -72,6 +112,7 @@ void setup() {
   Serial.printf("WLS mask-selftest=%s preserved=%s\n", maskOk && preservedOk ? "ok" : "fail", preservedOk ? "yes" : "no");
   gScanner.setBackend(&gArp);
   gUi.begin(gWifi, gScanner);
+  reportResource("ready");
   Serial.println("WLS ready discovery=local-arp");
 #if WLS_TEST_MODE
   Serial.println("WLS-HIL ready");
@@ -84,6 +125,7 @@ void loop() {
   gScanner.loop();
   serviceNameEnrichment(gScanner);
   serviceOuiEnrichment(gScanner);
+  noteResourceMilestones(gScanner);
   gUi.loop();
 #if WLS_TEST_MODE
   hilPoll();

@@ -1,6 +1,6 @@
 # WiFi LAN Scanner architecture
 
-This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, and offline manufacturer enrichment for hosts that discovery already found. Service enumeration and inventory persistence remain deferred.
+This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, and offline manufacturer enrichment for hosts that discovery already found. Positive observations can be serialized as CSV. The SD card is not mounted. Service enumeration and a Remote transport remain deferred.
 
 ## Hardware abstraction
 
@@ -60,9 +60,27 @@ Device builds set `WLS_OUI_EMBEDDED` and compile `src/OuiData.gen.inc` into flas
 
 Actionable controls share one geometry list (`collectUiControls` in `src/UiModel.cpp`), one painter, and one press tracker (`include/UiPress.h`). Host tests and the test-only HIL build call that same list. Touch-down paints that control immediately. Release inside the same control runs its action once. Sliding off before release cancels the action and restores the normal face. A tap shorter than 120 ms keeps the pressed face until 120 ms from touch-down so the acknowledgement stays visible. The Shift control stays filled while uppercase mode is on, and alphabet labels are an explicit `a-z`/`A-Z` map. `toupper` is not used. Serial logs on the password screen omit coordinates and key identity. See `docs/testing.md`.
 
+## Inventory export
+
+`include/InventoryExport.h` writes schema-1 CSV for hosts the scan already observed. The directory is `/LANScanner/scans/`. A publish writes `path.tmp` and renames it to the final name. Unanswered addresses are omitted. Local, group, unknown, and unavailable manufacturer states stay explicit, and a label is stored only for a known global assignment. The CSV has no passphrase column. See `docs/persistence.md`.
+
+`storeInventoryOnSd` returns unavailable. The installed GFX `LILYGO_T_DISPLAY_S3_PRO` example and the touch profile do not name an SD chip-select or SDMMC bus, so the firmware does not call `SD.begin` and does not choose a pin.
+
+## Resource telemetry
+
+`src/ResourceFormat.cpp` formats one line from injected counters. On the device, `src/ResourceMeter.cpp` fills that line from `ESP.getFreeHeap`, `getMinFreeHeap`, `getMaxAllocHeap`, `getPsramSize`, `getFreePsram`, and `getMinFreePsram`. Production prints it at ready, once when a scan starts, once during the scan, after completion, after name and manufacturer enrichment go idle, before and after the persistence attempt, and after reset. It is not printed on every `loop()`.
+
+## Remote-ready actions
+
+`include/AppActions.h` is the only place a touch control changes the scanner or the host-list view. `ScannerUi::dispatch` translates a control id into an `AppAction` and calls `applyAppAction`. Host tests call that same function directly. `fillAppState` copies the authoritative scanner and view into a passphrase-free snapshot. A future Remote client should send these actions and read this snapshot. It should not read the framebuffer. No USB, Wi-Fi, TLS, pairing, or Remote application is implemented, and that application is not in this repository.
+
+Host-row control ids are 200 through 205. Previous, Next, and Back keep their own ids.
+
 ## Still deferred
 
 - ICMP, TCP, UDP, mDNS service browse, SSDP, and NetBIOS
-- Inventory persistence and SD-card scan history
+- SD card mount, until an authoritative T-Display-S3-Pro SD pin and bus contract is known
+- JSON inventory export
+- Wi-Fi or USB Remote transport and the proprietary Remote application
 - T-Display-S3-Pro pins that this firmware does not use
 - A technician-entered saved network is still required before the production UI can scan; the automated live check is test-image only

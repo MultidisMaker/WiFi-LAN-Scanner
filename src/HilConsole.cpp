@@ -18,7 +18,12 @@
 #include "NameRecord.h"
 #include "Oui.h"
 #include "OuiData.h"
+#include "AppActions.h"
+#include "InventoryExport.h"
+#include "InventoryStore.h"
 #include "OuiEnricher.h"
+#include "ResourceFormat.h"
+#include "ResourceMeter.h"
 #include "NetMath.h"
 #include "PasswordBuffer.h"
 #include "ScannerController.h"
@@ -34,6 +39,17 @@ CandidatePlan gLivePlan;
 char gLine[96];
 size_t gUsed = 0;
 bool gOverflow = false;
+char gExportCsv[2048];
+char gExportCsvAgain[2048];
+InventoryRow gExportRows[8];
+
+struct HilRamFile {
+  char path[80];
+  char body[2048];
+  bool used;
+};
+
+HilRamFile gHilRam[4];
 
 const char* faceName(ControlFace face) {
   switch (face) {
@@ -228,6 +244,7 @@ void hilLive() {
   scanner.reset();
   serviceNameEnrichment(scanner);
   scanner.armConnectedFacts(facts);
+  reportResource("before-scan");
   scanner.start();
   const bool probeArmed = waitUntilProbe(scanner);
   const uint16_t held = scanner.processedCount();
@@ -257,6 +274,7 @@ void hilLive() {
     serviceOuiEnrichment(scanner);
     ++guard;
   }
+  reportResource("after-scan");
   const bool completeOk = scanner.state() == ScanState::Complete && scanner.processedCount() == scanner.candidateCount() &&
                           scanner.candidateCount() == gLivePlan.count && scanner.candidateCount() <= kCandidateCap;
   const uint16_t seen = scanner.observedCount();
@@ -271,6 +289,7 @@ void hilLive() {
   for (int step = 0; step < 16 && !ouiEnrichmentIdle(scanner); ++step) {
     serviceOuiEnrichment(scanner);
   }
+  reportResource("after-enrich");
   const bool dupOk = inventoryUnique(scanner);
   bool gatewaySeen = false;
   uint16_t named = 0;
@@ -304,6 +323,11 @@ void hilLive() {
   const uint16_t skipped = seen > queried ? static_cast<uint16_t>(seen - queried) : 0;
   Serial.printf("WLS-HIL ENRICH queried=%u named=%u skipped=%u\n", queried, named, skipped);
 
+  reportResource("before-persist");
+  const InventoryStoreResult stored = storeInventoryOnSd();
+  reportResource("after-persist");
+  Serial.printf("WLS-HIL PERSIST live=%s\n", stored.status == InventoryStoreStatus::Stored ? "stored" : "unavailable");
+
   scanner.reset();
   scanner.armConnectedFacts(facts);
   scanner.start();
@@ -320,6 +344,7 @@ void hilLive() {
   }
   const bool stopOk = stopArmed && scanner.state() == ScanState::Complete && scanner.observedCount() == partial;
   scanner.reset();
+  reportResource("after-reset");
   const bool resetOk = scanner.state() == ScanState::Idle && scanner.observedCount() == 0 && !scanner.hasCurrent();
   forgetVolatileSta();
   const bool livePass = pauseOk && resumeOk && stopOk && completeOk && resetOk && dupOk && seen > 0;
@@ -705,6 +730,281 @@ void hilDrag(const char* line) {
                 gesture.cancelled ? 1 : 0);
 }
 
+HilRamFile* hilRamFind(const char* path) {
+  if (path == nullptr) {
+    return nullptr;
+  }
+  for (int i = 0; i < 4; ++i) {
+    if (gHilRam[i].used && strcmp(gHilRam[i].path, path) == 0) {
+      return &gHilRam[i];
+    }
+  }
+  return nullptr;
+}
+
+bool hilRamWrite(void* context, const char* path, const char* text) {
+  (void)context;
+  if (path == nullptr || text == nullptr || strlen(path) >= sizeof(gHilRam[0].path) ||
+      strlen(text) >= sizeof(gHilRam[0].body)) {
+    return false;
+  }
+  HilRamFile* slot = hilRamFind(path);
+  if (slot == nullptr) {
+    for (int i = 0; i < 4; ++i) {
+      if (!gHilRam[i].used) {
+        slot = &gHilRam[i];
+        break;
+      }
+    }
+  }
+  if (slot == nullptr) {
+    return false;
+  }
+  memset(slot, 0, sizeof(*slot));
+  memcpy(slot->path, path, strlen(path));
+  memcpy(slot->body, text, strlen(text));
+  slot->used = true;
+  return true;
+}
+
+bool hilRamRename(void* context, const char* fromPath, const char* toPath) {
+  (void)context;
+  HilRamFile* src = hilRamFind(fromPath);
+  if (src == nullptr || toPath == nullptr || strlen(toPath) >= sizeof(src->path)) {
+    return false;
+  }
+  HilRamFile* dest = hilRamFind(toPath);
+  if (dest != nullptr && dest != src) {
+    dest->used = false;
+  }
+  memset(src->path, 0, sizeof(src->path));
+  memcpy(src->path, toPath, strlen(toPath));
+  return true;
+}
+
+void copyExport(char* dest, size_t cap, const char* text) {
+  size_t n = 0;
+  if (dest == nullptr || cap == 0) {
+    return;
+  }
+  if (text != nullptr) {
+    for (; text[n] != '\0' && n + 1 < cap; ++n) {
+      dest[n] = text[n];
+    }
+  }
+  dest[n] = '\0';
+}
+
+void hilResources() {
+  ResourceSample sample;
+  sample.heap = 1000;
+  sample.minHeap = 800;
+  sample.maxBlock = 700;
+  sample.psram = 8388608;
+  sample.freePsram = 7000000;
+  sample.minPsram = 6900000;
+  char line[180];
+  const int written = formatResourceLine(line, static_cast<int>(sizeof(line)), "hil-injected", sample);
+  const bool formatted =
+      written > 0 &&
+      strcmp(line, "WLS resource phase=hil-injected heap=1000 min=800 block=700 psram=8388608 freePsram=7000000 minPsram=6900000") ==
+          0;
+  if (formatted) {
+    Serial.println(line);
+  }
+  reportResource("hil-device");
+  Serial.printf("WLS-HIL RESOURCES pass=%d\n", formatted ? 1 : 0);
+}
+
+void hilPersist() {
+  memset(gHilRam, 0, sizeof(gHilRam));
+  memset(gExportRows, 0, sizeof(gExportRows));
+  InventoryMeta meta;
+  meta.sequence = 1;
+  copyExport(meta.station, sizeof(meta.station), "10.0.0.5");
+  meta.prefix = 28;
+  copyExport(meta.gateway, sizeof(meta.gateway), "10.0.0.1");
+  meta.candidates = 14;
+  meta.cap = 256;
+
+  ObservedHost missing;
+  missing.ip = ipv4(10, 0, 0, 2);
+  missing.method = "arp";
+  missing.macClass = MacClass::Absent;
+  missing.ouiState = OuiState::DataMissing;
+  missing.manufacturer = "Hidden";
+  inventoryRowFromHost(gExportRows[0], missing);
+
+  copyExport(gExportRows[1].ip, sizeof(gExportRows[1].ip), "10.0.0.1");
+  copyExport(gExportRows[1].mac, sizeof(gExportRows[1].mac), "00:11:22:33:44:55");
+  copyExport(gExportRows[1].method, sizeof(gExportRows[1].method), "arp");
+  copyExport(gExportRows[1].name, sizeof(gExportRows[1].name), "alpha");
+  copyExport(gExportRows[1].nameSource, sizeof(gExportRows[1].nameSource), "mdns");
+  copyExport(gExportRows[1].macClass, sizeof(gExportRows[1].macClass), "global");
+  copyExport(gExportRows[1].ouiState, sizeof(gExportRows[1].ouiState), "known");
+  copyExport(gExportRows[1].manufacturer, sizeof(gExportRows[1].manufacturer), "Acme, Widgets");
+
+  gExportRows[2] = gExportRows[1];
+  copyExport(gExportRows[2].ip, sizeof(gExportRows[2].ip), "10.0.0.3");
+  copyExport(gExportRows[2].manufacturer, sizeof(gExportRows[2].manufacturer), "Say \"hi\"");
+
+  gExportRows[3] = gExportRows[1];
+  copyExport(gExportRows[3].ip, sizeof(gExportRows[3].ip), "10.0.0.4");
+  copyExport(gExportRows[3].name, sizeof(gExportRows[3].name), "Line1\nLine2");
+  copyExport(gExportRows[3].manufacturer, sizeof(gExportRows[3].manufacturer), "Tail Vendor");
+
+  ObservedHost grouped;
+  grouped.ip = ipv4(10, 0, 0, 6);
+  grouped.hasMac = true;
+  const uint8_t groupMac[6] = {0x01, 0x11, 0x22, 0x33, 0x44, 0x55};
+  memcpy(grouped.mac, groupMac, sizeof(groupMac));
+  grouped.method = "arp";
+  grouped.macClass = MacClass::Group;
+  grouped.ouiState = OuiState::Group;
+  grouped.manufacturer = "Group Vendor";
+  inventoryRowFromHost(gExportRows[4], grouped);
+
+  ObservedHost local;
+  local.ip = ipv4(10, 0, 0, 7);
+  local.hasMac = true;
+  const uint8_t localMac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+  memcpy(local.mac, localMac, sizeof(localMac));
+  local.method = "arp";
+  local.macClass = MacClass::Local;
+  local.ouiState = OuiState::Local;
+  local.manufacturer = "Local Vendor";
+  inventoryRowFromHost(gExportRows[5], local);
+
+  const bool formatted = formatInventoryCsv(gExportCsv, static_cast<int>(sizeof(gExportCsv)), meta, gExportRows, 6);
+  const bool repeat = formatted && formatInventoryCsv(gExportCsvAgain, static_cast<int>(sizeof(gExportCsvAgain)), meta, gExportRows, 6) &&
+                      strcmp(gExportCsv, gExportCsvAgain) == 0;
+  const bool missingOk = gExportRows[0].mac[0] == '\0' && gExportRows[0].manufacturer[0] == '\0' &&
+                         strcmp(gExportRows[0].ouiState, "unavailable") == 0 && strstr(gExportCsv, "Hidden") == nullptr;
+  const bool commaOk = strstr(gExportCsv, "\"Acme, Widgets\"") != nullptr;
+  const bool quoteOk = strstr(gExportCsv, "\"Say \"\"hi\"\"\"") != nullptr;
+  const bool newlineOk = strstr(gExportCsv, "\"Line1\nLine2\"") != nullptr;
+  const bool keptStates = strstr(gExportCsv, "Group Vendor") == nullptr && strstr(gExportCsv, "Local Vendor") == nullptr &&
+                          strstr(gExportCsv, ",group,") != nullptr && strstr(gExportCsv, ",local,") != nullptr;
+  const bool secret = strstr(gExportCsv, "psk") != nullptr || strstr(gExportCsv, "password") != nullptr ||
+                      strstr(gExportCsv, "passphrase") != nullptr || strstr(gExportCsv, "Offline") != nullptr;
+  char path[80];
+  const bool pathOk = inventoryScanPath(path, sizeof(path), 1);
+  PublishSink sink;
+  sink.write = hilRamWrite;
+  sink.rename = hilRamRename;
+  const bool published = formatted && pathOk && publishText(sink, path, gExportCsv);
+  char temporary[96];
+  snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+  HilRamFile* finalFile = hilRamFind(path);
+  const bool roundtrip = published && repeat && missingOk && keptStates && finalFile != nullptr &&
+                         strcmp(finalFile->body, gExportCsv) == 0 && hilRamFind(temporary) == nullptr &&
+                         strstr(gExportCsv, inventoryCsvHeader()) != nullptr;
+  const InventoryStoreResult stored = storeInventoryOnSd();
+  const bool sdUnavailable = stored.status == InventoryStoreStatus::Unavailable && stored.detail != nullptr &&
+                             strcmp(stored.detail, "contract-unproven") == 0;
+  Serial.printf("WLS-HIL PERSIST path=%s\n", path);
+  Serial.printf("WLS-HIL PERSISTS roundtrip=%d comma=%d quote=%d newline=%d secret=%d sd=%s\n", roundtrip ? 1 : 0,
+                commaOk ? 1 : 0, quoteOk ? 1 : 0, newlineOk ? 1 : 0, secret ? 1 : 0,
+                sdUnavailable ? "unavailable" : "other");
+}
+
+struct HilTrace {
+  int start;
+  int scanning;
+  int paused;
+  int resumed;
+  int stopped;
+  int reset;
+  int hosts;
+  int nextPage;
+  int prevPage;
+  int closed;
+};
+
+void hilAct(AppView& view, bool viaControl, int id, AppAction direct, uint16_t heldCount) {
+  view.observedCount = heldCount;
+  int row = -1;
+  const AppAction action = viaControl ? actionFromControl(id, &row) : direct;
+  if (action == AppAction::SelectRow) {
+    view.rowOffset = row;
+  }
+  applyAppAction(action, view, gHilScanner, nullptr);
+}
+
+void fillHilTrace(HilTrace& out, bool viaControl) {
+  const NetFacts facts = deriveNetFacts(ipv4(10, 0, 0, 5), ipv4(255, 255, 255, 240), ipv4(10, 0, 0, 1),
+                                        ipv4(10, 0, 0, 1), ipv4(0, 0, 0, 0));
+  gHilBackend.clearScripts();
+  gHilBackend.setWaitMs(60000);
+  gHilScanner.reset();
+  gHilScanner.setBackend(&gHilBackend);
+  gHilScanner.armConnectedFacts(facts);
+  AppView view;
+  hilAct(view, viaControl, IdStart, AppAction::StartScan, 0);
+  out.start = gHilScanner.state() == ScanState::Starting ? 1 : 0;
+  delay(kScannerTransitionMs + 40);
+  gHilScanner.loop();
+  out.scanning = gHilScanner.state() == ScanState::Scanning ? 1 : 0;
+  hilAct(view, viaControl, IdPause, AppAction::PauseScan, 0);
+  out.paused = gHilScanner.state() == ScanState::Paused ? 1 : 0;
+  hilAct(view, viaControl, IdResume, AppAction::ResumeScan, 0);
+  out.resumed = gHilScanner.state() == ScanState::Scanning ? 1 : 0;
+  hilAct(view, viaControl, IdStop, AppAction::StopScan, 0);
+  delay(kScannerTransitionMs + 40);
+  gHilScanner.loop();
+  out.stopped = gHilScanner.state() == ScanState::Complete ? 1 : 0;
+  hilAct(view, viaControl, IdReset, AppAction::ResetScan, 0);
+  out.reset = gHilScanner.state() == ScanState::Idle && gHilScanner.observedCount() == 0 ? 1 : 0;
+  view = AppView();
+  hilAct(view, viaControl, IdHosts, AppAction::OpenHosts, 13);
+  out.hosts = view.showingHosts && view.page == 0 ? 1 : 0;
+  hilAct(view, viaControl, IdNext, AppAction::NextPage, 13);
+  out.nextPage = view.page;
+  hilAct(view, viaControl, IdPrev, AppAction::PrevPage, 13);
+  out.prevPage = view.page;
+  hilAct(view, viaControl, IdBack, AppAction::Back, 13);
+  out.closed = view.showingHosts ? 0 : 1;
+}
+
+bool hilTraceSame(const HilTrace& left, const HilTrace& right) {
+  return left.start == right.start && left.scanning == right.scanning && left.paused == right.paused &&
+         left.resumed == right.resumed && left.stopped == right.stopped && left.reset == right.reset &&
+         left.hosts == right.hosts && left.nextPage == right.nextPage && left.prevPage == right.prevPage &&
+         left.closed == right.closed;
+}
+
+void hilActions() {
+  HilTrace touch;
+  HilTrace direct;
+  fillHilTrace(touch, true);
+  fillHilTrace(direct, false);
+  int row = -1;
+  const bool prevOk = actionFromControl(IdPrev, &row) == AppAction::PrevPage && IdPrev != IdRow0 + 1;
+  const bool rowOk = actionFromControl(IdRow0, &row) == AppAction::SelectRow && row == 0 && IdRow0 == 200;
+  AppView view;
+  view.showingHosts = true;
+  AppWifiView wifi;
+  wifi.phase = "idle";
+  AppState state;
+  fillAppState(state, view, gHilScanner, wifi);
+  char line[240];
+  const int written = formatAppStateLine(line, static_cast<int>(sizeof(line)), state);
+  const bool stateOk = written > 0 && strstr(line, "password") == nullptr && strstr(line, "psk") == nullptr &&
+                       strstr(line, "passphrase") == nullptr && strstr(line, "screen=hosts") != nullptr;
+  if (stateOk) {
+    Serial.println(line);
+  }
+  const bool hostsOk = touch.hosts == 1 && direct.hosts == 1 && touch.nextPage == 1 && direct.nextPage == 1 &&
+                       touch.prevPage == 0 && direct.prevPage == 0 && touch.closed == 1 && direct.closed == 1 && prevOk &&
+                       rowOk && stateOk;
+  const bool same = hilTraceSame(touch, direct) && stateOk;
+  Serial.printf("WLS-HIL ACTIONS start=%d pause=%d resume=%d stop=%d reset=%d hosts=%d same=%d\n",
+                touch.start == 1 && touch.scanning == 1 && direct.start == 1 && direct.scanning == 1 ? 1 : 0,
+                touch.paused == 1 && direct.paused == 1 ? 1 : 0, touch.resumed == 1 && direct.resumed == 1 ? 1 : 0,
+                touch.stopped == 1 && direct.stopped == 1 ? 1 : 0, touch.reset == 1 && direct.reset == 1 ? 1 : 0,
+                hostsOk ? 1 : 0, same ? 1 : 0);
+}
+
 void hilDispatch(const char* line) {
   if (strcmp(line, "PING") == 0) {
     Serial.println("WLS-HIL PONG");
@@ -722,6 +1022,12 @@ void hilDispatch(const char* line) {
     hilNames();
   } else if (strcmp(line, "OUI") == 0) {
     hilOui();
+  } else if (strcmp(line, "RESOURCES") == 0) {
+    hilResources();
+  } else if (strcmp(line, "ACTIONS") == 0) {
+    hilActions();
+  } else if (strcmp(line, "PERSIST") == 0) {
+    hilPersist();
   } else if (strcmp(line, "LIVE") == 0) {
     hilLive();
   } else if (strncmp(line, "UI ", 3) == 0) {

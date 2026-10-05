@@ -100,13 +100,13 @@ def run_hil(port, transcript):
         ("TAP 0 0 40 80", "WLS-HIL TAP hit=none fire=0 cancel=0 shown=-1 face=normal"),
         ("DRAG 20 80 0 0 30 40", "WLS-HIL DRAG hit=find fire=0 cancel=1"),
         ("UI results", "WLS-HIL UI ok"),
-        ("TAP 20 50 40 80", "WLS-HIL TAP hit=row fire=1 cancel=0 shown=7 face=pressed"),
+        ("TAP 20 50 40 80", "WLS-HIL TAP hit=row fire=1 cancel=0 shown=200 face=pressed"),
         ("UI password 0", "WLS-HIL UI ok"),
         ("KEYS", "WLS-HIL KEYS labels=lower face=normal pass=1"),
         ("TAP 10 100 40 80", "WLS-HIL TAP hit=key fire=1 cancel=0 shown=100 face=pressed"),
         ("UI password 1", "WLS-HIL UI ok"),
         ("KEYS", "WLS-HIL KEYS labels=upper face=latched pass=1"),
-        ("TAP 10 440 40 80", "WLS-HIL TAP hit=shift fire=1 cancel=0 shown=11 face=latchedpressed"),
+        ("TAP 10 440 40 80", "WLS-HIL TAP hit=shift fire=1 cancel=0 shown=10 face=latchedpressed"),
         ("PRESERVE", "WLS-HIL PRESERVE preserved=1 mask=1"),
         ("SCAN", "WLS-HIL SCAN pass=1"),
         (
@@ -121,13 +121,22 @@ def run_hil(port, transcript):
             "OUI",
             "WLS-HIL OUIS known=1 unknown=1 local=1 group=1 kept=1 ui=1 registry=1",
         ),
+        ("RESOURCES", "WLS-HIL RESOURCES pass=1"),
+        (
+            "ACTIONS",
+            "WLS-HIL ACTIONS start=1 pause=1 resume=1 stop=1 reset=1 hosts=1 same=1",
+        ),
+        (
+            "PERSIST",
+            "WLS-HIL PERSISTS roundtrip=1 comma=1 quote=1 newline=1 secret=0 sd=unavailable",
+        ),
     ]
     ok = True
     for command, expected in steps:
         transcript.append("> " + command)
         port.write((command + "\n").encode("ascii"))
         port.flush()
-        timeout = 8 if command in ("SCAN", "DISCOVER", "NAMES", "OUI") else 4
+        timeout = 8 if command in ("SCAN", "DISCOVER", "NAMES", "OUI", "ACTIONS", "PERSIST", "RESOURCES") else 4
         got = wait_for(port, lambda line, expected=expected: line == expected, timeout, transcript)
         if got != expected:
             transcript.append("! expected " + expected)

@@ -10,7 +10,6 @@ enum UiControlId : int {
   IdPause,
   IdResume,
   IdStop,
-  IdRow0,
   IdPrev,
   IdNext,
   IdBack,
@@ -23,7 +22,10 @@ enum UiControlId : int {
   IdProgress,
   IdNewest,
   IdHosts,
-  IdKeyBase = 100
+  IdKeyBase = 100,
+  // Rows used to sit in the sequential list, which made IdRow0 + 1 equal IdPrev.
+  // Previous, Next, and Back then never ran. Keep rows in their own range.
+  IdRow0 = 200
 };
 
 enum class UiPhase : uint8_t { Home, Results, Password, Hosts };

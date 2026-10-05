@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "AppActions.h"
 #include "BoardConfig.h"
 #include "DisplayBoard.h"
 #include "NameRecord.h"
@@ -15,6 +16,42 @@
 #include "UiModel.h"
 
 namespace {
+
+WifiService* wifiFrom(void* context) { return static_cast<WifiService*>(context); }
+
+void hookFind(void* context) { wifiFrom(context)->requestScan(); }
+
+void hookForget(void* context) { wifiFrom(context)->forget(); }
+
+void hookSelect(void* context, int index) { wifiFrom(context)->selectResult(index); }
+
+void hookShift(void* context) { wifiFrom(context)->toggleShift(); }
+
+void hookBackspace(void* context) { wifiFrom(context)->backspace(); }
+
+void hookSubmit(void* context) { wifiFrom(context)->submitPassword(); }
+
+void hookCancel(void* context) { wifiFrom(context)->cancelPassword(); }
+
+const char* phaseToken(WifiPhase phase) {
+  switch (phase) {
+    case WifiPhase::Idle:
+      return "idle";
+    case WifiPhase::Scanning:
+      return "scanning";
+    case WifiPhase::Results:
+      return "results";
+    case WifiPhase::Password:
+      return "entry";
+    case WifiPhase::Connecting:
+      return "connecting";
+    case WifiPhase::Connected:
+      return "connected";
+    case WifiPhase::Failed:
+      return "failed";
+  }
+  return "unknown";
+}
 
 void copyLabel(char* dest, size_t destLen, const char* text) {
   if (destLen == 0) {
@@ -280,7 +317,7 @@ int ScannerUi::hitControl(int x, int y) const {
 }
 
 void ScannerUi::dispatch(int id) {
-  if (id >= IdKeyBase) {
+  if (id >= IdKeyBase && id < IdRow0) {
     int cap = 0;
     UiControl* controls = uiScratchControls(&cap);
     const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
@@ -293,85 +330,58 @@ void ScannerUi::dispatch(int id) {
     return;
   }
 
-  if (id >= IdRow0 && id < IdRow0 + 6) {
-    if (!showingHosts_ && wifi_->phase() == WifiPhase::Results) {
-      wifi_->selectResult(page_ * 6 + (id - IdRow0));
-    }
+  AppView view;
+  view.showingHosts = showingHosts_;
+  view.resultsOpen = !showingHosts_ && wifi_->phase() == WifiPhase::Results;
+  view.page = page_;
+  view.keyboardPage = keyboardPage_;
+  view.resultCount = wifi_->resultCount();
+  view.observedCount = scanner_->observedCount();
+  int row = -1;
+  const AppAction action = actionFromControl(id, &row);
+  if (action == AppAction::SelectRow) {
+    view.rowOffset = row;
+  }
+  AppHooks hooks;
+  hooks.findNetworks = hookFind;
+  hooks.forgetNetwork = hookForget;
+  hooks.selectResult = hookSelect;
+  hooks.toggleShift = hookShift;
+  hooks.backspace = hookBackspace;
+  hooks.submitPassword = hookSubmit;
+  hooks.cancelPassword = hookCancel;
+  hooks.context = wifi_;
+  applyAppAction(action, view, *scanner_, &hooks);
+  showingHosts_ = view.showingHosts;
+  page_ = view.page;
+  keyboardPage_ = view.keyboardPage;
+}
+
+void ScannerUi::captureState(AppState& out) const {
+  if (wifi_ == nullptr || scanner_ == nullptr) {
+    out = AppState();
     return;
   }
-
-  switch (id) {
-    case IdFind:
-      page_ = 0;
-      wifi_->requestScan();
-      break;
-    case IdForget:
-      wifi_->forget();
-      break;
-    case IdStart:
-      scanner_->start();
-      break;
-    case IdReset:
-      page_ = 0;
-      scanner_->reset();
-      break;
-    case IdHosts:
-      page_ = 0;
-      showingHosts_ = true;
-      break;
-    case IdPause:
-      scanner_->pause();
-      break;
-    case IdResume:
-      scanner_->resume();
-      break;
-    case IdStop:
-      scanner_->stop();
-      break;
-    case IdPrev:
-      if (page_ > 0) {
-        --page_;
-      }
-      break;
-    case IdNext:
-      if (showingHosts_) {
-        if ((page_ + 1) * 6 < scanner_->observedCount()) {
-          ++page_;
-        }
-      } else if ((page_ + 1) * 6 < wifi_->resultCount()) {
-        ++page_;
-      }
-      break;
-    case IdBack:
-      page_ = 0;
-      if (showingHosts_) {
-        showingHosts_ = false;
-      } else {
-        wifi_->cancelPassword();
-      }
-      break;
-    case IdShift:
-      wifi_->toggleShift();
-      break;
-    case IdPage:
-      keyboardPage_ ^= 1;
-      break;
-    case IdDel:
-      wifi_->backspace();
-      break;
-    case IdOk:
-      wifi_->submitPassword();
-      break;
-    case IdClose:
-      wifi_->cancelPassword();
-      break;
-    default:
-      break;
-  }
+  AppView view;
+  view.showingHosts = showingHosts_;
+  view.resultsOpen = !showingHosts_ && wifi_->phase() == WifiPhase::Results;
+  view.page = page_;
+  view.keyboardPage = keyboardPage_;
+  view.resultCount = wifi_->resultCount();
+  view.observedCount = scanner_->observedCount();
+  AppWifiView wifi;
+  wifi.phase = phaseToken(wifi_->phase());
+  const char* ssid = wifi_->hasSavedNetwork() ? wifi_->savedSsid() : wifi_->selectedSsid();
+  wifi.ssid = ssid == nullptr ? "" : ssid;
+  wifi.saved = wifi_->hasSavedNetwork();
+  wifi.shift = wifi_->shiftOn();
+  wifi.entry = wifi_->phase() == WifiPhase::Password;
+  wifi.results = wifi_->phase() == WifiPhase::Results;
+  fillAppState(out, view, *scanner_, wifi);
 }
 
 void ScannerUi::noteTouch(const char* event, int id, int x, int y, bool includePoint) {
-  const bool password = wifi_->phase() == WifiPhase::Password || id >= IdKeyBase;
+  const bool password = wifi_->phase() == WifiPhase::Password || (id >= IdKeyBase && id < IdRow0);
   if (password) {
     Serial.printf("WLS touch %s\n", event);
     return;

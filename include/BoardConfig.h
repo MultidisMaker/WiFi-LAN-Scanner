@@ -16,6 +16,10 @@
 // records SDA 5 / SCL 6, SensorLib 0.1.6 CST226SE (address 0x5A, chip id 0xA8),
 // and reset/irq left at -1 because no installed Pro source names those GPIOs.
 // This increment does not assign a touch reset or interrupt pin.
+//
+// SD contract: the same GFX LILYGO_T_DISPLAY_S3_PRO block and pro_profile.h do not
+// name an SD chip-select, SPI bus, or SDMMC pin. This firmware does not invent one
+// and does not call SD.begin. Display SPI pins above stay with the panel.
 
 static constexpr int kPanelWidth = 222;
 static constexpr int kPanelHeight = 480;

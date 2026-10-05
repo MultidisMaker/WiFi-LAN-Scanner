@@ -1,16 +1,21 @@
 #include <unity.h>
 
+#include <stdio.h>
 #include <string.h>
 
+#include "AppActions.h"
 #include "BoardConfig.h"
 #include "CandidatePlan.h"
 #include "FakeDiscovery.h"
 #include "HostInventory.h"
+#include "InventoryExport.h"
+#include "InventoryStore.h"
 #include "NameRecord.h"
 #include "NetMath.h"
 #include "Oui.h"
 #include "OuiData.h"
 #include "PasswordBuffer.h"
+#include "ResourceFormat.h"
 #include "ScanClock.h"
 #include "ScannerController.h"
 #include "UiModel.h"
@@ -809,6 +814,331 @@ void test_ui_results_row_uses_role_name(void) {
   TEST_ASSERT_EQUAL_STRING("row", uiControlName(gesture.hitId));
 }
 
+static int gPicked = -1;
+
+static void rememberPick(void* context, int index) {
+  (void)context;
+  gPicked = index;
+}
+
+static void act(ScannerController& scanner, AppView& view, bool viaControl, int id, AppAction direct, const AppHooks* hooks) {
+  int row = -1;
+  const AppAction chosen = viaControl ? actionFromControl(id, &row) : direct;
+  if (chosen == AppAction::SelectRow) {
+    view.rowOffset = row;
+  }
+  applyAppAction(chosen, view, scanner, hooks);
+}
+
+void test_action_parity_touch_and_direct(void) {
+  TEST_ASSERT_TRUE(IdRow0 == 200);
+  TEST_ASSERT_TRUE(IdShift == 10);
+  TEST_ASSERT_TRUE(IdPrev != IdRow0 + 1);
+  int row = -1;
+  TEST_ASSERT_TRUE(actionFromControl(IdPrev, &row) == AppAction::PrevPage);
+  TEST_ASSERT_TRUE(actionFromControl(IdRow0, &row) == AppAction::SelectRow && row == 0);
+  TEST_ASSERT_TRUE(actionFromControl(IdStart, nullptr) == AppAction::StartScan);
+
+  gScanNow = 8000;
+  ScannerController touch;
+  ScannerController direct;
+  FakeDiscoveryBackend touchBackend;
+  FakeDiscoveryBackend directBackend;
+  armReady(touch, touchBackend, lan24(), 60000);
+  armReady(direct, directBackend, lan24(), 60000);
+  AppView touchView;
+  AppView directView;
+  act(touch, touchView, true, IdStart, AppAction::StartScan, nullptr);
+  act(direct, directView, false, IdStart, AppAction::StartScan, nullptr);
+  TEST_ASSERT_TRUE(touch.state() == ScanState::Starting && direct.state() == ScanState::Starting);
+
+  gScanNow += kScannerTransitionMs;
+  touch.loop();
+  direct.loop();
+  TEST_ASSERT_TRUE(touch.state() == ScanState::Scanning && direct.state() == ScanState::Scanning);
+  TEST_ASSERT_TRUE(touch.processedCount() == direct.processedCount());
+
+  act(touch, touchView, true, IdPause, AppAction::PauseScan, nullptr);
+  act(direct, directView, false, IdPause, AppAction::PauseScan, nullptr);
+  TEST_ASSERT_TRUE(touch.state() == ScanState::Paused && direct.state() == ScanState::Paused);
+
+  act(touch, touchView, true, IdResume, AppAction::ResumeScan, nullptr);
+  act(direct, directView, false, IdResume, AppAction::ResumeScan, nullptr);
+  TEST_ASSERT_TRUE(touch.state() == ScanState::Scanning && direct.state() == ScanState::Scanning);
+
+  act(touch, touchView, true, IdStop, AppAction::StopScan, nullptr);
+  act(direct, directView, false, IdStop, AppAction::StopScan, nullptr);
+  gScanNow += kScannerTransitionMs;
+  touch.loop();
+  direct.loop();
+  TEST_ASSERT_TRUE(touch.state() == ScanState::Complete && direct.state() == ScanState::Complete);
+
+  touchView.page = 3;
+  directView.page = 3;
+  act(touch, touchView, true, IdReset, AppAction::ResetScan, nullptr);
+  act(direct, directView, false, IdReset, AppAction::ResetScan, nullptr);
+  TEST_ASSERT_TRUE(touch.state() == ScanState::Idle && direct.state() == ScanState::Idle);
+  TEST_ASSERT_TRUE(touch.observedCount() == 0 && direct.observedCount() == 0);
+  TEST_ASSERT_TRUE(touchView.page == 0 && directView.page == 0);
+
+  touchView.observedCount = 13;
+  directView.observedCount = 13;
+  act(touch, touchView, true, IdHosts, AppAction::OpenHosts, nullptr);
+  act(direct, directView, false, IdHosts, AppAction::OpenHosts, nullptr);
+  TEST_ASSERT_TRUE(touchView.showingHosts && directView.showingHosts && touchView.page == 0 && directView.page == 0);
+  touchView.observedCount = 13;
+  directView.observedCount = 13;
+  act(touch, touchView, true, IdNext, AppAction::NextPage, nullptr);
+  act(direct, directView, false, IdNext, AppAction::NextPage, nullptr);
+  TEST_ASSERT_TRUE(touchView.page == 1 && directView.page == 1);
+  act(touch, touchView, true, IdPrev, AppAction::PrevPage, nullptr);
+  act(direct, directView, false, IdPrev, AppAction::PrevPage, nullptr);
+  TEST_ASSERT_TRUE(touchView.page == 0 && directView.page == 0);
+  act(touch, touchView, true, IdBack, AppAction::Back, nullptr);
+  act(direct, directView, false, IdBack, AppAction::Back, nullptr);
+  TEST_ASSERT_TRUE(!touchView.showingHosts && !directView.showingHosts);
+
+  AppHooks hooks;
+  hooks.selectResult = rememberPick;
+  gPicked = -1;
+  touchView.showingHosts = false;
+  touchView.resultsOpen = true;
+  touchView.page = 1;
+  act(touch, touchView, true, IdRow0 + 2, AppAction::SelectRow, &hooks);
+  TEST_ASSERT_TRUE(gPicked == 8);
+  gPicked = -1;
+  touchView.showingHosts = true;
+  act(touch, touchView, false, IdRow0, AppAction::SelectRow, &hooks);
+  TEST_ASSERT_TRUE(gPicked == -1);
+}
+
+void test_app_state_has_no_secret(void) {
+  gScanNow = 9000;
+  ScannerController scanner;
+  FakeDiscoveryBackend backend;
+  armReady(scanner, backend, lan24(), 60000);
+  AppView view;
+  view.showingHosts = true;
+  view.page = 2;
+  view.keyboardPage = 1;
+  AppWifiView wifi;
+  wifi.phase = "Password";
+  wifi.ssid = "TFMiddle";
+  wifi.saved = true;
+  wifi.shift = true;
+  wifi.entry = false;
+  AppState state;
+  fillAppState(state, view, scanner, wifi);
+  char line[320];
+  TEST_ASSERT_TRUE(formatAppStateLine(line, static_cast<int>(sizeof(line)), state) > 0);
+  TEST_ASSERT_TRUE(strstr(line, "password") == nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "Password") == nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "psk") == nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "passphrase") == nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "screen=hosts") != nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "wifi=entry") != nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "ssid=TFMiddle") != nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "scan=IDLE") != nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "canStart=1") != nullptr);
+  TEST_ASSERT_TRUE(state.screen == AppScreen::Hosts);
+}
+
+struct ExportRam {
+  char path[80];
+  char body[4096];
+  bool used;
+};
+
+static ExportRam gExportRam[4];
+
+static ExportRam* findExport(const char* path) {
+  for (int i = 0; i < 4; ++i) {
+    if (gExportRam[i].used && strcmp(gExportRam[i].path, path) == 0) {
+      return &gExportRam[i];
+    }
+  }
+  return nullptr;
+}
+
+static bool exportWrite(void* context, const char* path, const char* text) {
+  (void)context;
+  if (path == nullptr || text == nullptr || strlen(path) >= sizeof(gExportRam[0].path) ||
+      strlen(text) >= sizeof(gExportRam[0].body)) {
+    return false;
+  }
+  ExportRam* slot = findExport(path);
+  if (slot == nullptr) {
+    for (int i = 0; i < 4; ++i) {
+      if (!gExportRam[i].used) {
+        slot = &gExportRam[i];
+        break;
+      }
+    }
+  }
+  if (slot == nullptr) {
+    return false;
+  }
+  memset(slot, 0, sizeof(*slot));
+  memcpy(slot->path, path, strlen(path));
+  memcpy(slot->body, text, strlen(text));
+  slot->used = true;
+  return true;
+}
+
+static bool exportRename(void* context, const char* fromPath, const char* toPath) {
+  (void)context;
+  ExportRam* src = findExport(fromPath);
+  if (src == nullptr || toPath == nullptr || strlen(toPath) >= sizeof(src->path)) {
+    return false;
+  }
+  ExportRam* dest = findExport(toPath);
+  if (dest != nullptr && dest != src) {
+    dest->used = false;
+  }
+  memset(src->path, 0, sizeof(src->path));
+  memcpy(src->path, toPath, strlen(toPath));
+  return true;
+}
+
+static void copyField(char* dest, size_t cap, const char* text) {
+  size_t n = 0;
+  if (text != nullptr) {
+    for (; text[n] != '\0' && n + 1 < cap; ++n) {
+      dest[n] = text[n];
+    }
+  }
+  dest[n] = '\0';
+}
+
+void test_inventory_csv_escape_and_publish(void) {
+  InventoryRow rows[6];
+  memset(rows, 0, sizeof(rows));
+  ObservedHost missing;
+  missing.ip = ipv4(10, 0, 0, 2);
+  missing.method = "arp";
+  missing.macClass = MacClass::Absent;
+  missing.ouiState = OuiState::DataMissing;
+  missing.manufacturer = "Hidden";
+  inventoryRowFromHost(rows[0], missing);
+  TEST_ASSERT_TRUE(rows[0].manufacturer[0] == '\0');
+  TEST_ASSERT_TRUE(strcmp(rows[0].ouiState, "unavailable") == 0);
+  TEST_ASSERT_TRUE(rows[0].mac[0] == '\0');
+
+  copyField(rows[1].ip, sizeof(rows[1].ip), "10.0.0.1");
+  copyField(rows[1].mac, sizeof(rows[1].mac), "00:11:22:33:44:55");
+  copyField(rows[1].method, sizeof(rows[1].method), "arp");
+  copyField(rows[1].name, sizeof(rows[1].name), "a,b");
+  copyField(rows[1].nameSource, sizeof(rows[1].nameSource), "mdns");
+  copyField(rows[1].macClass, sizeof(rows[1].macClass), "global");
+  copyField(rows[1].ouiState, sizeof(rows[1].ouiState), "known");
+  copyField(rows[1].manufacturer, sizeof(rows[1].manufacturer), "Acme, Widgets");
+
+  rows[2] = rows[1];
+  copyField(rows[2].ip, sizeof(rows[2].ip), "10.0.0.3");
+  copyField(rows[2].name, sizeof(rows[2].name), "plain");
+  copyField(rows[2].manufacturer, sizeof(rows[2].manufacturer), "Say \"hi\"");
+
+  rows[3] = rows[1];
+  copyField(rows[3].ip, sizeof(rows[3].ip), "10.0.0.4");
+  copyField(rows[3].name, sizeof(rows[3].name), "Line1\nLine2");
+  copyField(rows[3].manufacturer, sizeof(rows[3].manufacturer), "Tail Vendor");
+
+  ObservedHost grouped;
+  grouped.ip = ipv4(10, 0, 0, 6);
+  grouped.hasMac = true;
+  const uint8_t groupMac[6] = {0x01, 0x11, 0x22, 0x33, 0x44, 0x55};
+  memcpy(grouped.mac, groupMac, sizeof(groupMac));
+  grouped.method = "arp";
+  grouped.macClass = MacClass::Group;
+  grouped.ouiState = OuiState::Group;
+  grouped.manufacturer = "Group Vendor";
+  inventoryRowFromHost(rows[4], grouped);
+  TEST_ASSERT_TRUE(rows[4].manufacturer[0] == '\0');
+  TEST_ASSERT_TRUE(strcmp(rows[4].ouiState, "group") == 0);
+
+  ObservedHost local;
+  local.ip = ipv4(10, 0, 0, 7);
+  local.hasMac = true;
+  const uint8_t localMac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+  memcpy(local.mac, localMac, sizeof(localMac));
+  local.method = "arp";
+  local.macClass = MacClass::Local;
+  local.ouiState = OuiState::Unknown;
+  local.manufacturer = "Local Vendor";
+  inventoryRowFromHost(rows[5], local);
+  TEST_ASSERT_TRUE(rows[5].manufacturer[0] == '\0');
+  TEST_ASSERT_TRUE(strcmp(rows[5].macClass, "local") == 0);
+  TEST_ASSERT_TRUE(strcmp(rows[5].ouiState, "unknown") == 0);
+
+  InventoryMeta meta;
+  meta.sequence = 1;
+  copyField(meta.station, sizeof(meta.station), "10.0.0.5");
+  meta.prefix = 28;
+  copyField(meta.gateway, sizeof(meta.gateway), "10.0.0.1");
+  meta.candidates = 14;
+  meta.cap = 256;
+  char csv[4096];
+  char again[4096];
+  TEST_ASSERT_TRUE(formatInventoryCsv(csv, static_cast<int>(sizeof(csv)), meta, rows, 6));
+  TEST_ASSERT_TRUE(formatInventoryCsv(again, static_cast<int>(sizeof(again)), meta, rows, 6));
+  TEST_ASSERT_TRUE(strcmp(csv, again) == 0);
+  TEST_ASSERT_TRUE(strstr(csv, "# schema=1\n") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "# sequence=1\n") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "# station=10.0.0.5\n") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "# prefix=28\n") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "# gateway=10.0.0.1\n") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "# candidates=14\n") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "# cap=256\n") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, inventoryCsvHeader()) == csv + strlen("# schema=1\n# sequence=1\n# station=10.0.0.5\n# prefix=28\n# gateway=10.0.0.1\n# candidates=14\n# cap=256\n"));
+  TEST_ASSERT_TRUE(strstr(csv, "\"a,b\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "\"Acme, Widgets\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "\"Say \"\"hi\"\"\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "\"Line1\nLine2\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "Hidden") == nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "Group Vendor") == nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "Local Vendor") == nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "psk") == nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "password") == nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "passphrase") == nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "Offline") == nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, ",group,") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, ",unknown,") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, ",unavailable,") != nullptr);
+
+  memset(gExportRam, 0, sizeof(gExportRam));
+  char path[80];
+  TEST_ASSERT_TRUE(inventoryScanPath(path, sizeof(path), 1));
+  TEST_ASSERT_TRUE(strcmp(path, "/LANScanner/scans/scan-00000001.csv") == 0);
+  PublishSink sink;
+  sink.write = exportWrite;
+  sink.rename = exportRename;
+  TEST_ASSERT_TRUE(publishText(sink, path, csv));
+  char temporary[96];
+  snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+  TEST_ASSERT_TRUE(findExport(temporary) == nullptr);
+  ExportRam* finalFile = findExport(path);
+  TEST_ASSERT_TRUE(finalFile != nullptr && strcmp(finalFile->body, csv) == 0);
+
+  const InventoryStoreResult stored = storeInventoryOnSd();
+  TEST_ASSERT_TRUE(stored.status == InventoryStoreStatus::Unavailable);
+  TEST_ASSERT_TRUE(stored.detail != nullptr && strcmp(stored.detail, "contract-unproven") == 0);
+}
+
+void test_resource_line_injected(void) {
+  ResourceSample sample;
+  sample.heap = 1000;
+  sample.minHeap = 800;
+  sample.maxBlock = 700;
+  sample.psram = 8388608;
+  sample.freePsram = 7000000;
+  sample.minPsram = 6900000;
+  char line[180];
+  TEST_ASSERT_TRUE(formatResourceLine(line, static_cast<int>(sizeof(line)), "boot", sample) > 0);
+  TEST_ASSERT_TRUE(strcmp(line, "WLS resource phase=boot heap=1000 min=800 block=700 psram=8388608 freePsram=7000000 minPsram=6900000") == 0);
+  TEST_ASSERT_TRUE(formatResourceLine(line, static_cast<int>(sizeof(line)), "bad phase", sample) > 0);
+  TEST_ASSERT_TRUE(strstr(line, "phase=badphase") != nullptr);
+}
+
 static int gFailures = 0;
 
 void setup() {
@@ -842,6 +1172,10 @@ void setup() {
   RUN_TEST(test_oui_parse_classify_and_lookup);
   RUN_TEST(test_inventory_oui_preserves_host_without_table);
   RUN_TEST(test_ui_manufacturer_states);
+  RUN_TEST(test_action_parity_touch_and_direct);
+  RUN_TEST(test_app_state_has_no_secret);
+  RUN_TEST(test_inventory_csv_escape_and_publish);
+  RUN_TEST(test_resource_line_injected);
   gFailures = UNITY_END();
 }
 

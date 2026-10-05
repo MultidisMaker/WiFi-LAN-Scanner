@@ -49,7 +49,7 @@ The test image keeps that passphrase in RAM only and does not write it to the pr
 
 ## Layout
 
-`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. Hosts already found by the bounded ARP scan can receive a link-local mDNS hostname and an offline manufacturer label. Service enumeration and inventory persistence are still deferred. `tools/oui/build_oui_index.py` rebuilds `src/OuiData.gen.inc` from the public IEEE MA-L CSV. See `tools/oui/README.md`.
+`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. Hosts already found by the bounded ARP scan can receive a link-local mDNS hostname and an offline manufacturer label. Positive observations can be serialized as schema-1 CSV under `/LANScanner/scans/`. The firmware does not mount an SD card, because the T-Display-S3-Pro SD pins are not named by the installed board examples. Touch actions and a future Remote client share one action dispatcher. No Remote transport is implemented. Service enumeration is still deferred. `tools/oui/build_oui_index.py` rebuilds `src/OuiData.gen.inc` from the public IEEE MA-L CSV. See `tools/oui/README.md` and `docs/persistence.md`.
 
 ## Community
 

@@ -1,0 +1,95 @@
+#pragma once
+
+#include <stdint.h>
+
+#include "ScannerController.h"
+#include "UiModel.h"
+
+// Logical actions shared by the touchscreen and a future Remote client.
+// No USB, Wi-Fi, or TLS transport is attached to this dispatcher.
+enum class AppAction : uint8_t {
+  None = 0,
+  FindNetworks,
+  ForgetNetwork,
+  StartScan,
+  PauseScan,
+  ResumeScan,
+  StopScan,
+  ResetScan,
+  OpenHosts,
+  Back,
+  NextPage,
+  PrevPage,
+  Shift,
+  KeyboardPage,
+  Backspace,
+  SubmitPassword,
+  CancelPassword,
+  SelectRow
+};
+
+enum class AppScreen : uint8_t { Home, Results, Entry, Hosts };
+
+struct AppView {
+  bool showingHosts = false;
+  bool resultsOpen = false;
+  int page = 0;
+  int keyboardPage = 0;
+  int rowOffset = 0;
+  int resultCount = 0;
+  uint16_t observedCount = 0;
+};
+
+struct AppHooks {
+  void (*findNetworks)(void* context) = nullptr;
+  void (*forgetNetwork)(void* context) = nullptr;
+  void (*selectResult)(void* context, int index) = nullptr;
+  void (*toggleShift)(void* context) = nullptr;
+  void (*backspace)(void* context) = nullptr;
+  void (*submitPassword)(void* context) = nullptr;
+  void (*cancelPassword)(void* context) = nullptr;
+  void* context = nullptr;
+};
+
+struct AppWifiView {
+  const char* phase = "idle";
+  const char* ssid = "";
+  bool saved = false;
+  bool shift = false;
+  bool entry = false;
+  bool results = false;
+};
+
+struct AppState {
+  AppScreen screen = AppScreen::Home;
+  char wifiPhase[16] = {};
+  char ssid[33] = {};
+  bool saved = false;
+  char scan[16] = {};
+  uint16_t processed = 0;
+  uint16_t candidates = 0;
+  uint16_t observed = 0;
+  char current[16] = {};
+  char last[16] = {};
+  char newest[16] = {};
+  uint32_t elapsedMs = 0;
+  bool hostsOpen = false;
+  int page = 0;
+  int keyboardPage = 0;
+  bool shift = false;
+  bool canStart = false;
+  bool canPause = false;
+  bool canResume = false;
+};
+
+// Row ids 200..205 become SelectRow. Other known controls map to one action.
+// A null rowOffset is ignored. SelectRow writes the 0..5 offset there.
+AppAction actionFromControl(int id, int* rowOffset);
+
+// One behavior implementation. Null Wi-Fi hooks skip those calls.
+void applyAppAction(AppAction action, AppView& view, ScannerController& scanner, const AppHooks* hooks);
+
+void fillAppState(AppState& out, const AppView& view, const ScannerController& scanner, const AppWifiView& wifi);
+
+// One diagnostic line. It has no passphrase field. Returns length, or -1.
+int formatAppStateLine(char* out, int cap, const AppState& state);
