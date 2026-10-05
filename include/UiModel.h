@@ -36,6 +36,7 @@ struct UiControl {
   int h;
   char label[22];
   char detail[40];
+  char vendor[32];
   char value;
   bool latched;
 };
@@ -52,9 +53,11 @@ struct UiSnapshot {
   char progressDetail[22] = {};
   char newestLabel[22] = {};
   char newestDetail[40] = {};
+  char newestVendor[32] = {};
   bool rowPresent[6] = {};
   char rowLabel[6][22] = {};
   char rowDetail[6][40] = {};
+  char rowVendor[6][32] = {};
 };
 
 struct UiGesture {

@@ -9,6 +9,7 @@
 #include "DisplayBoard.h"
 #include "NameRecord.h"
 #include "NetMath.h"
+#include "Oui.h"
 #include "NetworkRange.h"
 #include "TouchBoard.h"
 #include "UiModel.h"
@@ -78,6 +79,7 @@ int gatherControls(UiControl* out, int cap, const WifiService& wifi, const Scann
       formatIpv4(host->ip, snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]));
       formatHostDetail(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), host->nameSource, host->name,
                        host->hasMac, host->mac);
+      formatOuiLine(snapshot.rowVendor[row], sizeof(snapshot.rowVendor[row]), host->ouiState, host->manufacturer);
     }
   } else if (snapshot.phase == UiPhase::Home) {
     snapshot.showDashboard = true;
@@ -103,6 +105,7 @@ int gatherControls(UiControl* out, int cap, const WifiService& wifi, const Scann
       formatIpv4(newest->ip, snapshot.newestLabel, sizeof(snapshot.newestLabel));
       formatHostDetail(snapshot.newestDetail, sizeof(snapshot.newestDetail), newest->nameSource, newest->name,
                        newest->hasMac, newest->mac);
+      formatOuiLine(snapshot.newestVendor, sizeof(snapshot.newestVendor), newest->ouiState, newest->manufacturer);
     }
   }
   return collectUiControls(out, cap, snapshot);
@@ -142,6 +145,9 @@ void paintControl(Arduino_GFX& gfx, const UiControl& control, bool pressed) {
   textLine(gfx, textX, textY, size, ink, control.label);
   if (control.detail[0] != '\0') {
     textLine(gfx, control.x + 6, control.y + 26, 1, ink, control.detail);
+  }
+  if (control.vendor[0] != '\0' && control.h >= 44) {
+    textLine(gfx, control.x + 6, control.y + 36, 1, ink, control.vendor);
   }
 }
 

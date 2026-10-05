@@ -31,11 +31,17 @@ void HostInventory::merge(ObservedHost& dest, const Ipv4& ip, EvidenceRank evide
   }
   dest.lastSeenMs = seenMs;
   if (evidence >= dest.evidence && hasMac && mac != nullptr) {
+    const bool sameMac = dest.hasMac && memcmp(dest.mac, mac, 6) == 0;
     dest.hasMac = true;
     memcpy(dest.mac, mac, 6);
     dest.evidence = evidence;
     if (method != nullptr) {
       dest.method = method;
+    }
+    if (!sameMac) {
+      dest.macClass = classifyMac(mac);
+      dest.ouiState = OuiState::Unset;
+      dest.manufacturer = nullptr;
     }
   } else if (evidence > dest.evidence) {
     dest.evidence = evidence;
@@ -83,6 +89,13 @@ void HostInventory::observe(const Ipv4& ip, EvidenceRank evidence, bool hasMac, 
   dest.hasMac = hasMac && mac != nullptr;
   if (dest.hasMac) {
     memcpy(dest.mac, mac, 6);
+    dest.macClass = classifyMac(mac);
+    dest.ouiState = OuiState::Unset;
+    dest.manufacturer = nullptr;
+  } else {
+    dest.macClass = MacClass::Absent;
+    dest.ouiState = OuiState::None;
+    dest.manufacturer = nullptr;
   }
   dest.hasLatency = hasLatency;
   dest.latencyMs = latencyMs;
@@ -112,4 +125,21 @@ NameApply HostInventory::rememberName(const Ipv4& ip, const char* raw, NameSourc
   memcpy(dest->name, cleaned, strlen(cleaned) + 1);
   dest->nameSource = source;
   return NameApply::Applied;
+}
+
+void HostInventory::enrichManufacturer(uint16_t index, const OuiTable& table) {
+  if (index >= count_) {
+    return;
+  }
+  ObservedHost& host = hosts_[index];
+  if (!host.hasMac) {
+    host.macClass = MacClass::Absent;
+    host.ouiState = OuiState::None;
+    host.manufacturer = nullptr;
+    return;
+  }
+  const OuiResult result = lookupOui(table, host.mac);
+  host.macClass = result.macClass;
+  host.ouiState = result.state;
+  host.manufacturer = result.name;
 }

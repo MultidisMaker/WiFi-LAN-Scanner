@@ -219,6 +219,10 @@ NameApply ScannerController::rememberName(const Ipv4& ip, const char* raw, NameS
   return inventory_.rememberName(ip, raw, source);
 }
 
+void ScannerController::enrichManufacturer(uint16_t index, const OuiTable& table) {
+  inventory_.enrichManufacturer(index, table);
+}
+
 bool ScannerController::selfTest() {
   DiscoveryBackend* previous = backend_;
   const bool wasConnected = connected_;

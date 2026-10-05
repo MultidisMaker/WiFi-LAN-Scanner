@@ -1,6 +1,6 @@
 # WiFi LAN Scanner architecture
 
-This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, and link-local hostname enrichment for hosts that discovery already found. Service enumeration and inventory persistence remain deferred.
+This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, and offline manufacturer enrichment for hosts that discovery already found. Service enumeration and inventory persistence remain deferred.
 
 ## Hardware abstraction
 
@@ -36,11 +36,19 @@ A non-contiguous mask, or a prefix outside 1..30, is reported as an unavailable 
 
 The device sends at most one lwIP ARP request at a time, then reads `etharp_find_addr` on the station netif. Those are the stock lwIP functions declared in the installed Arduino-ESP32 2.x header `lwip/etharp.h` (ESP32-S3 SDK under PlatformIO `framework-arduinoespressif32`). The installed lwIP default `ARP_TABLE_SIZE` is 10, so requests are not pipelined. Each probe waits up to 200 ms. An address outside the station subnet, or the station's own address, is not transmitted. A missing reply is recorded as unanswered and is not shown as Offline. A MAC address is stored only when the ARP cache returns one. The ARP scanner does not send TCP, UDP, ICMP, SSDP, NetBIOS, or probes beyond the directly connected subnet.
 
-After a host is observed, `src/MdnsEnricher.cpp` may ask mDNS for that host's reverse name. The query is one PTR for `{d}.{c}.{b}.{a}.in-addr.arpa` with no service type and no protocol, so it is not a service browse. One query is in flight, and each attempt is capped at about 400 ms. A missing answer leaves the name blank and keeps the IP and MAC. The firmware does not send reverse DNS to the DHCP resolver, because that resolver can be outside the joined subnet. Names are sanitized to at most 31 characters. An mDNS name outranks a reverse-DNS name, and the same source keeps the lexicographically smaller sanitized name. The host row shows the IPv4 address and a single detail line with a one-letter source tag, the display name or `unknown`, and the MAC or `MAC unknown`.
+After a host is observed, `src/MdnsEnricher.cpp` may ask mDNS for that host's reverse name. The query is one PTR for `{d}.{c}.{b}.{a}.in-addr.arpa` with no service type and no protocol, so it is not a service browse. One query is in flight, and each attempt is capped at about 400 ms. A missing answer leaves the name blank and keeps the IP and MAC. The firmware does not send reverse DNS to the DHCP resolver, because that resolver can be outside the joined subnet. Names are sanitized to at most 31 characters. An mDNS name outranks a reverse-DNS name, and the same source keeps the lexicographically smaller sanitized name. The host row shows the IPv4 address and a detail line with a one-letter source tag, the display name or `unknown`, and the MAC or `MAC unknown`. A third line shows the manufacturer when the offline OUI table has one.
 
 Three layers cover this path. Host-native tests use `FakeDiscoveryBackend` and do not transmit. The synthetic HIL image uses that same fake backend over the serial protocol and checks fake names without joining Wi-Fi. The optional live HIL command associates with a vault-supplied transient credential and then uses the production `LwipArpBackend` plus the mDNS reverse lookup on the joined subnet only. The HIL serial protocol, including the live command, exists only in the test image. The production image uses `LwipArpBackend` and the mDNS enricher, and it has no test passphrase.
 
 Observed hosts stay in RAM for the current boot. They are de-duplicated by IPv4 address and, when a MAC is present, by that MAC. A later weaker observation does not erase a MAC already learned. Reset and a new scan clear the list. Nothing is written to NVS, SD, or a file.
+
+## Manufacturer enrichment
+
+`src/Oui.cpp` classifies a stored MAC, then may attach a manufacturer from a local table. The group bit is checked first, including broadcast and a MAC that also has the local bit set. A locally administered unicast MAC is labeled local and never receives a guessed vendor. A globally administered prefix that is absent from the table stays unknown. An empty table leaves the host marked unavailable and does not clear its IP, MAC, or hostname.
+
+The table is produced by `tools/oui/build_oui_index.py` from the public IEEE MA-L CSV `https://standards-oui.ieee.org/oui/oui.csv`. The script keeps MA-L rows, accepts `AABBCC`, `AA:BB:CC`, and `AA-BB-CC`, sanitizes organization names to at most 64 characters, and keeps the lexicographically smaller name when an assignment is repeated. Non-ASCII characters are dropped. One published row, assignment `04208A`, has an organization name that contains no retained characters, so that prefix stays unknown rather than being transliterated. The raw CSV is not committed. Refresh instructions are in `tools/oui/README.md`.
+
+Device builds set `WLS_OUI_EMBEDDED` and compile `src/OuiData.gen.inc` into flash. The enricher binary-searches that table and updates at most 32 not-yet-classified hosts per `loop()` call. Host tests use a small fixture instead of the generated registry, and the native image leaves the embedded table empty. The host-list row is 48 pixels tall: the IPv4 address, the existing name and MAC line, and a clipped manufacturer line. The 34-pixel home card keeps the address and name/MAC line so the button positions stay put. The full stored name remains on the host record.
 
 ## Scanner controller
 
@@ -55,7 +63,6 @@ Actionable controls share one geometry list (`collectUiControls` in `src/UiModel
 ## Still deferred
 
 - ICMP, TCP, UDP, mDNS service browse, SSDP, and NetBIOS
-- OUI lookup and `tools/oui/`
 - Inventory persistence and SD-card scan history
 - T-Display-S3-Pro pins that this firmware does not use
 - A technician-entered saved network is still required before the production UI can scan; the automated live check is test-image only

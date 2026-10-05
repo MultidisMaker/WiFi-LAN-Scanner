@@ -16,6 +16,9 @@
 #include "HostInventory.h"
 #include "MdnsEnricher.h"
 #include "NameRecord.h"
+#include "Oui.h"
+#include "OuiData.h"
+#include "OuiEnricher.h"
 #include "NetMath.h"
 #include "PasswordBuffer.h"
 #include "ScannerController.h"
@@ -251,6 +254,7 @@ void hilLive() {
     }
     deviceUiLoop();
     serviceNameEnrichment(scanner);
+    serviceOuiEnrichment(scanner);
     ++guard;
   }
   const bool completeOk = scanner.state() == ScanState::Complete && scanner.processedCount() == scanner.candidateCount() &&
@@ -260,8 +264,12 @@ void hilLive() {
   const uint32_t enrichBudget = static_cast<uint32_t>(seen) * 400u + 500u;
   while (!nameEnrichmentIdle(scanner) && static_cast<uint32_t>(millis() - enrichStart) < enrichBudget) {
     serviceNameEnrichment(scanner);
+    serviceOuiEnrichment(scanner);
     delay(20);
     deviceUiLoop();
+  }
+  for (int step = 0; step < 16 && !ouiEnrichmentIdle(scanner); ++step) {
+    serviceOuiEnrichment(scanner);
   }
   const bool dupOk = inventoryUnique(scanner);
   bool gatewaySeen = false;
@@ -285,8 +293,12 @@ void hilLive() {
     } else {
       hostMac[0] = '\0';
     }
-    Serial.printf("WLS-HIL HOST ip=%s mac=%s name=%s source=%s\n", hostIp, host->hasMac ? hostMac : "none",
-                  host->name[0] != '\0' ? host->name : "none", nameSourceLabel(host->nameSource));
+    const char* org = host->ouiState == OuiState::Known && host->manufacturer != nullptr && host->manufacturer[0] != '\0'
+                          ? host->manufacturer
+                          : "none";
+    Serial.printf("WLS-HIL HOST ip=%s mac=%s name=%s source=%s oui=%s org=%s\n", hostIp,
+                  host->hasMac ? hostMac : "none", host->name[0] != '\0' ? host->name : "none",
+                  nameSourceLabel(host->nameSource), ouiStateLabel(host->ouiState), org);
   }
   const uint16_t queried = nameEnrichmentQueryCount();
   const uint16_t skipped = seen > queried ? static_cast<uint16_t>(seen - queried) : 0;
@@ -558,6 +570,83 @@ void hilNames() {
                 blankOk ? 1 : 0, keptOk ? 1 : 0, clippedOk ? 1 : 0, precedenceOk ? 1 : 0, sameOk ? 1 : 0, uiOk ? 1 : 0);
 }
 
+void hilOui() {
+  static const char kNames[] = "Acme Widgets\0Hidden Vendor\0Group Vendor";
+  static const OuiEntry kEntries[] = {
+      {0x001122u, 0u},
+      {0x011122u, 27u},
+      {0x021122u, 13u},
+  };
+  const OuiTable table = {kEntries, 3u, kNames};
+  const uint8_t knownMac[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+  const uint8_t unknownMac[6] = {0x00, 0x44, 0x55, 0x66, 0x77, 0x88};
+  const uint8_t localMac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+  const uint8_t groupMac[6] = {0x01, 0x11, 0x22, 0x33, 0x44, 0x55};
+  gHilDuplicate.clear();
+  gHilDuplicate.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, knownMac, true, 4, 10, "fake");
+  gHilDuplicate.observe(ipv4(10, 0, 0, 2), EvidenceRank::Neighbor, true, unknownMac, true, 4, 11, "fake");
+  gHilDuplicate.observe(ipv4(10, 0, 0, 3), EvidenceRank::Neighbor, true, localMac, true, 4, 12, "fake");
+  gHilDuplicate.observe(ipv4(10, 0, 0, 4), EvidenceRank::Neighbor, true, groupMac, true, 4, 13, "fake");
+  const bool named = gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "alpha", NameSource::Mdns) == NameApply::Applied;
+  for (uint16_t i = 0; i < gHilDuplicate.count(); ++i) {
+    gHilDuplicate.enrichManufacturer(i, table);
+  }
+  const ObservedHost* known = gHilDuplicate.at(0);
+  const ObservedHost* unknown = gHilDuplicate.at(1);
+  const ObservedHost* local = gHilDuplicate.at(2);
+  const ObservedHost* group = gHilDuplicate.at(3);
+  const bool knownOk = known != nullptr && known->ouiState == OuiState::Known && known->manufacturer != nullptr &&
+                       strcmp(known->manufacturer, "Acme Widgets") == 0 && known->macClass == MacClass::Global;
+  const bool unknownOk = unknown != nullptr && unknown->ouiState == OuiState::Unknown && unknown->manufacturer == nullptr &&
+                         unknown->macClass == MacClass::Global;
+  const bool localOk = local != nullptr && local->ouiState == OuiState::Local && local->manufacturer == nullptr &&
+                       local->macClass == MacClass::Local;
+  const bool groupOk = group != nullptr && group->ouiState == OuiState::Group && group->manufacturer == nullptr &&
+                       group->macClass == MacClass::Group;
+  const bool keptOk = named && knownOk && strcmp(known->name, "alpha") == 0 && known->nameSource == NameSource::Mdns &&
+                      known->hasMac && known->mac[0] == 0x00 && ipv4Equal(known->ip, ipv4(10, 0, 0, 1));
+  UiSnapshot snapshot;
+  snapshot.phase = UiPhase::Hosts;
+  for (int row = 0; row < 4; ++row) {
+    const ObservedHost* host = gHilDuplicate.at(static_cast<uint16_t>(row));
+    snapshot.rowPresent[row] = host != nullptr;
+    if (host == nullptr) {
+      continue;
+    }
+    formatIpv4(host->ip, snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]));
+    formatHostDetail(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), host->nameSource, host->name, host->hasMac,
+                     host->mac);
+    formatOuiLine(snapshot.rowVendor[row], sizeof(snapshot.rowVendor[row]), host->ouiState, host->manufacturer);
+  }
+  UiControl controls[8];
+  const int count = collectUiControls(controls, 8, snapshot);
+  const char* vendor[4] = {};
+  const char* detail0 = nullptr;
+  for (int i = 0; i < count; ++i) {
+    if (strcmp(controls[i].label, "10.0.0.1") == 0) {
+      vendor[0] = controls[i].vendor;
+      detail0 = controls[i].detail;
+    } else if (strcmp(controls[i].label, "10.0.0.2") == 0) {
+      vendor[1] = controls[i].vendor;
+    } else if (strcmp(controls[i].label, "10.0.0.3") == 0) {
+      vendor[2] = controls[i].vendor;
+    } else if (strcmp(controls[i].label, "10.0.0.4") == 0) {
+      vendor[3] = controls[i].vendor;
+    }
+  }
+  const bool uiOk = vendor[0] != nullptr && vendor[1] != nullptr && vendor[2] != nullptr && vendor[3] != nullptr &&
+                    strcmp(vendor[0], "Acme Widgets") == 0 && strcmp(vendor[1], "unknown") == 0 &&
+                    strcmp(vendor[2], "local") == 0 && strcmp(vendor[3], "group") == 0 && detail0 != nullptr &&
+                    strstr(detail0, "m:alpha ") == detail0;
+  const OuiTable embedded = embeddedOuiTable();
+  const bool registryOk = embedded.entries != nullptr && embedded.names != nullptr && embedded.count >= 30000u;
+  Serial.printf("WLS-HIL OUI ip=10.0.0.1 class=global state=known org=%s\n",
+                known != nullptr && known->manufacturer != nullptr ? known->manufacturer : "none");
+  Serial.printf("WLS-HIL OUIREG count=%u\n", embedded.count);
+  Serial.printf("WLS-HIL OUIS known=%d unknown=%d local=%d group=%d kept=%d ui=%d registry=%d\n", knownOk ? 1 : 0,
+                unknownOk ? 1 : 0, localOk ? 1 : 0, groupOk ? 1 : 0, keptOk ? 1 : 0, uiOk ? 1 : 0, registryOk ? 1 : 0);
+}
+
 void hilUi(const char* line) {
   char mode[16] = {};
   int shift = 0;
@@ -631,6 +720,8 @@ void hilDispatch(const char* line) {
     hilDiscover();
   } else if (strcmp(line, "NAMES") == 0) {
     hilNames();
+  } else if (strcmp(line, "OUI") == 0) {
+    hilOui();
   } else if (strcmp(line, "LIVE") == 0) {
     hilLive();
   } else if (strncmp(line, "UI ", 3) == 0) {

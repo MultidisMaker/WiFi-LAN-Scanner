@@ -7,6 +7,7 @@
 #include "LwipArpBackend.h"
 #include "MdnsEnricher.h"
 #include "NetMath.h"
+#include "OuiEnricher.h"
 #include "NetworkRange.h"
 #include "ScannerController.h"
 #include "ScannerUi.h"
@@ -82,6 +83,7 @@ void loop() {
   armScannerFromStation();
   gScanner.loop();
   serviceNameEnrichment(gScanner);
+  serviceOuiEnrichment(gScanner);
   gUi.loop();
 #if WLS_TEST_MODE
   hilPoll();

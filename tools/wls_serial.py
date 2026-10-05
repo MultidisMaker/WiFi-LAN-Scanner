@@ -117,13 +117,17 @@ def run_hil(port, transcript):
             "NAMES",
             "WLS-HIL NAMES named=1 blank=1 kept=1 clipped=1 precedence=1 same=1 ui=1",
         ),
+        (
+            "OUI",
+            "WLS-HIL OUIS known=1 unknown=1 local=1 group=1 kept=1 ui=1 registry=1",
+        ),
     ]
     ok = True
     for command, expected in steps:
         transcript.append("> " + command)
         port.write((command + "\n").encode("ascii"))
         port.flush()
-        timeout = 8 if command in ("SCAN", "DISCOVER", "NAMES") else 4
+        timeout = 8 if command in ("SCAN", "DISCOVER", "NAMES", "OUI") else 4
         got = wait_for(port, lambda line, expected=expected: line == expected, timeout, transcript)
         if got != expected:
             transcript.append("! expected " + expected)

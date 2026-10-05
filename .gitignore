@@ -39,3 +39,5 @@ lan-inventory*
 oui-cache*
 *.log
 build-*/
+__pycache__/
+*.pyc

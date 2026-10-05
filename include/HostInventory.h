@@ -2,6 +2,7 @@
 
 #include "NameRecord.h"
 #include "NetMath.h"
+#include "Oui.h"
 
 enum class EvidenceRank : uint8_t { None = 0, Answered = 1, Neighbor = 2 };
 
@@ -17,6 +18,9 @@ struct ObservedHost {
   const char* method = "";
   char name[32] = {};
   NameSource nameSource = NameSource::None;
+  MacClass macClass = MacClass::Absent;
+  OuiState ouiState = OuiState::Unset;
+  const char* manufacturer = nullptr;
 };
 
 // In-memory only. Reboot clears it. Unanswered probes are not stored.
@@ -31,6 +35,7 @@ class HostInventory {
   void observe(const Ipv4& ip, EvidenceRank evidence, bool hasMac, const uint8_t mac[6], bool hasLatency,
                uint32_t latencyMs, uint32_t seenMs, const char* method);
   NameApply rememberName(const Ipv4& ip, const char* raw, NameSource source);
+  void enrichManufacturer(uint16_t index, const OuiTable& table);
 
  private:
   ObservedHost hosts_[kCap] = {};

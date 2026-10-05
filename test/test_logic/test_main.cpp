@@ -8,6 +8,8 @@
 #include "HostInventory.h"
 #include "NameRecord.h"
 #include "NetMath.h"
+#include "Oui.h"
+#include "OuiData.h"
 #include "PasswordBuffer.h"
 #include "ScanClock.h"
 #include "ScannerController.h"
@@ -614,6 +616,190 @@ void test_ui_host_detail_with_and_without_name(void) {
   TEST_ASSERT_TRUE(sawNamed && sawUnknown);
 }
 
+void test_oui_parse_classify_and_lookup(void) {
+  uint32_t prefix = 0;
+  TEST_ASSERT_TRUE(parseOuiAssignment("AABBCC", &prefix));
+  TEST_ASSERT_EQUAL_UINT32(0x00AABBCCu, prefix);
+  TEST_ASSERT_TRUE(parseOuiAssignment("aa:bb:cc", &prefix));
+  TEST_ASSERT_EQUAL_UINT32(0x00AABBCCu, prefix);
+  TEST_ASSERT_TRUE(parseOuiAssignment("AA-BB-CC", &prefix));
+  TEST_ASSERT_EQUAL_UINT32(0x00AABBCCu, prefix);
+  TEST_ASSERT_TRUE(parseOuiAssignment("  aabbcc  ", &prefix));
+  TEST_ASSERT_EQUAL_UINT32(0x00AABBCCu, prefix);
+  TEST_ASSERT_FALSE(parseOuiAssignment(nullptr, &prefix));
+  TEST_ASSERT_FALSE(parseOuiAssignment("", &prefix));
+  TEST_ASSERT_FALSE(parseOuiAssignment("GG0000", &prefix));
+  TEST_ASSERT_FALSE(parseOuiAssignment("AA:BB:CC:DD", &prefix));
+  TEST_ASSERT_FALSE(parseOuiAssignment("AA:BB-CC", &prefix));
+  TEST_ASSERT_FALSE(parseOuiAssignment("AABBCCD", &prefix));
+  TEST_ASSERT_FALSE(parseOuiAssignment("AA:BB:CC extra", &prefix));
+
+  char cleaned[80];
+  TEST_ASSERT_TRUE(sanitizeManufacturer("  Jetway Information Co., Ltd.  ", cleaned, sizeof(cleaned)));
+  TEST_ASSERT_EQUAL_STRING("Jetway Information Co., Ltd", cleaned);
+  TEST_ASSERT_FALSE(sanitizeManufacturer("@@@", cleaned, sizeof(cleaned)));
+  TEST_ASSERT_FALSE(sanitizeManufacturer(nullptr, cleaned, sizeof(cleaned)));
+  char longOrg[160];
+  for (int i = 0; i < 159; ++i) {
+    longOrg[i] = 'M';
+  }
+  longOrg[159] = '\0';
+  TEST_ASSERT_TRUE(sanitizeManufacturer(longOrg, cleaned, sizeof(cleaned)));
+  TEST_ASSERT_EQUAL_UINT(64, strlen(cleaned));
+
+  TEST_ASSERT_EQUAL_STRING("CERN", preferredOuiName("NETWORK RESEARCH CORPORATION", "CERN"));
+  TEST_ASSERT_EQUAL_STRING("Acme", preferredOuiName("Acme", ""));
+  TEST_ASSERT_EQUAL_STRING("Alpha", preferredOuiName("Alpha", "Zebra"));
+  TEST_ASSERT_TRUE(preferredOuiName("Acme", nullptr) != nullptr && strcmp(preferredOuiName("Acme", nullptr), "Acme") == 0);
+
+  const uint8_t globalMac[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+  const uint8_t localMac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+  const uint8_t groupMac[6] = {0x01, 0x11, 0x22, 0x33, 0x44, 0x55};
+  const uint8_t mixedMac[6] = {0x03, 0x11, 0x22, 0x33, 0x44, 0x55};
+  const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  TEST_ASSERT_TRUE(classifyMac(globalMac) == MacClass::Global);
+  TEST_ASSERT_TRUE(classifyMac(localMac) == MacClass::Local);
+  TEST_ASSERT_TRUE(classifyMac(groupMac) == MacClass::Group);
+  TEST_ASSERT_TRUE(classifyMac(mixedMac) == MacClass::Group);
+  TEST_ASSERT_TRUE(classifyMac(broadcast) == MacClass::Group);
+  TEST_ASSERT_TRUE(classifyMac(nullptr) == MacClass::Absent);
+
+  static const char kNames[] = "Acme Widgets\0Tail Vendor\0Hidden Vendor";
+  static const OuiEntry kEntries[] = {
+      {0x001122u, 0u},
+      {0x00ABCDu, 13u},
+      {0x021122u, 25u},
+  };
+  TEST_ASSERT_EQUAL_STRING("Tail Vendor", kNames + 13);
+  TEST_ASSERT_EQUAL_STRING("Hidden Vendor", kNames + 25);
+  const OuiTable table = {kEntries, 3u, kNames};
+  const OuiResult known = lookupOui(table, globalMac);
+  TEST_ASSERT_TRUE(known.state == OuiState::Known && known.name != nullptr);
+  TEST_ASSERT_EQUAL_STRING("Acme Widgets", known.name);
+  const uint8_t tailMac[6] = {0x00, 0xAB, 0xCD, 0x01, 0x02, 0x03};
+  const OuiResult tail = lookupOui(table, tailMac);
+  TEST_ASSERT_TRUE(tail.state == OuiState::Known && tail.name != nullptr);
+  TEST_ASSERT_EQUAL_STRING("Tail Vendor", tail.name);
+  const uint8_t unknownMac[6] = {0x00, 0x44, 0x55, 0x66, 0x77, 0x88};
+  const OuiResult unknown = lookupOui(table, unknownMac);
+  TEST_ASSERT_TRUE(unknown.state == OuiState::Unknown && unknown.name == nullptr && unknown.macClass == MacClass::Global);
+  const OuiResult local = lookupOui(table, localMac);
+  TEST_ASSERT_TRUE(local.state == OuiState::Local && local.name == nullptr);
+  const OuiResult group = lookupOui(table, groupMac);
+  TEST_ASSERT_TRUE(group.state == OuiState::Group && group.name == nullptr);
+  const OuiResult missing = lookupOui(OuiTable{}, globalMac);
+  TEST_ASSERT_TRUE(missing.state == OuiState::DataMissing && missing.name == nullptr);
+  const OuiResult absent = lookupOui(table, nullptr);
+  TEST_ASSERT_TRUE(absent.state == OuiState::None && absent.macClass == MacClass::Absent);
+  const OuiTable embedded = embeddedOuiTable();
+  TEST_ASSERT_TRUE(embedded.entries == nullptr && embedded.count == 0);
+}
+
+void test_inventory_oui_preserves_host_without_table(void) {
+  HostInventory inventory;
+  const uint8_t mac[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+  inventory.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, mac, true, 5, 10, "fake");
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "printer.local", NameSource::Mdns) == NameApply::Applied);
+  inventory.enrichManufacturer(0, OuiTable{});
+  const ObservedHost* host = inventory.at(0);
+  TEST_ASSERT_TRUE(host != nullptr);
+  TEST_ASSERT_TRUE(host->ouiState == OuiState::DataMissing && host->manufacturer == nullptr);
+  TEST_ASSERT_EQUAL_STRING("printer", host->name);
+  TEST_ASSERT_TRUE(host->nameSource == NameSource::Mdns);
+  TEST_ASSERT_TRUE(host->hasMac && host->mac[0] == 0x00 && host->mac[2] == 0x22);
+  TEST_ASSERT_TRUE(ipv4Equal(host->ip, ipv4(10, 0, 0, 1)));
+  TEST_ASSERT_EQUAL_STRING("fake", host->method);
+
+  static const char kNames[] = "Acme Widgets";
+  static const OuiEntry kEntries[] = {{0x001122u, 0u}};
+  const OuiTable table = {kEntries, 1u, kNames};
+  inventory.enrichManufacturer(0, table);
+  host = inventory.at(0);
+  TEST_ASSERT_TRUE(host->ouiState == OuiState::Known && host->manufacturer != nullptr);
+  TEST_ASSERT_EQUAL_STRING("Acme Widgets", host->manufacturer);
+  TEST_ASSERT_EQUAL_STRING("printer", host->name);
+  TEST_ASSERT_TRUE(ipv4Equal(host->ip, ipv4(10, 0, 0, 1)));
+
+  const uint8_t other[6] = {0x00, 0x44, 0x55, 0x66, 0x77, 0x88};
+  inventory.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, other, true, 6, 20, "fake");
+  host = inventory.at(0);
+  TEST_ASSERT_TRUE(host->ouiState == OuiState::Unset && host->manufacturer == nullptr);
+  TEST_ASSERT_EQUAL_STRING("printer", host->name);
+  TEST_ASSERT_TRUE(host->hasMac && host->mac[1] == 0x44);
+  inventory.enrichManufacturer(0, table);
+  host = inventory.at(0);
+  TEST_ASSERT_TRUE(host->ouiState == OuiState::Unknown && host->manufacturer == nullptr);
+  TEST_ASSERT_EQUAL_STRING("printer", host->name);
+  TEST_ASSERT_EQUAL_UINT(20, host->lastSeenMs);
+}
+
+void test_ui_manufacturer_states(void) {
+  char line[32];
+  formatOuiLine(line, sizeof(line), OuiState::Known, "Acme Widgets");
+  TEST_ASSERT_EQUAL_STRING("Acme Widgets", line);
+  char longName[80];
+  for (int i = 0; i < 40; ++i) {
+    longName[i] = 'M';
+  }
+  longName[40] = '\0';
+  formatOuiLine(line, sizeof(line), OuiState::Known, longName);
+  TEST_ASSERT_EQUAL_UINT(31, strlen(line));
+  formatOuiLine(line, sizeof(line), OuiState::Unknown, "ignored");
+  TEST_ASSERT_EQUAL_STRING("unknown", line);
+  formatOuiLine(line, sizeof(line), OuiState::Local, "Hidden Vendor");
+  TEST_ASSERT_EQUAL_STRING("local", line);
+  formatOuiLine(line, sizeof(line), OuiState::Group, "Group Vendor");
+  TEST_ASSERT_EQUAL_STRING("group", line);
+  formatOuiLine(line, sizeof(line), OuiState::DataMissing, "Acme Widgets");
+  TEST_ASSERT_EQUAL_STRING("unavailable", line);
+  formatOuiLine(line, sizeof(line), OuiState::Unset, "Acme Widgets");
+  TEST_ASSERT_EQUAL_STRING("", line);
+
+  UiSnapshot snapshot;
+  snapshot.phase = UiPhase::Hosts;
+  snapshot.rowPresent[0] = true;
+  snapshot.rowPresent[1] = true;
+  snapshot.rowPresent[2] = true;
+  const char* ip0 = "10.0.0.1";
+  const char* ip1 = "10.0.0.2";
+  const char* ip2 = "10.0.0.3";
+  for (int i = 0; ip0[i] != '\0'; ++i) {
+    snapshot.rowLabel[0][i] = ip0[i];
+  }
+  for (int i = 0; ip1[i] != '\0'; ++i) {
+    snapshot.rowLabel[1][i] = ip1[i];
+  }
+  for (int i = 0; ip2[i] != '\0'; ++i) {
+    snapshot.rowLabel[2][i] = ip2[i];
+  }
+  const char* detail = "m:alpha 00:11:22:33:44:55";
+  for (int i = 0; detail[i] != '\0'; ++i) {
+    snapshot.rowDetail[0][i] = detail[i];
+  }
+  formatOuiLine(snapshot.rowVendor[0], sizeof(snapshot.rowVendor[0]), OuiState::Known, "Acme Widgets");
+  formatOuiLine(snapshot.rowVendor[1], sizeof(snapshot.rowVendor[1]), OuiState::Unknown, nullptr);
+  formatOuiLine(snapshot.rowVendor[2], sizeof(snapshot.rowVendor[2]), OuiState::Local, "Hidden Vendor");
+  UiControl controls[8];
+  const int count = collectUiControls(controls, 8, snapshot);
+  bool sawKnown = false;
+  bool sawUnknown = false;
+  bool sawLocal = false;
+  for (int i = 0; i < count; ++i) {
+    if (strcmp(controls[i].label, "10.0.0.1") == 0) {
+      sawKnown = true;
+      TEST_ASSERT_EQUAL_STRING("m:alpha 00:11:22:33:44:55", controls[i].detail);
+      TEST_ASSERT_EQUAL_STRING("Acme Widgets", controls[i].vendor);
+    } else if (strcmp(controls[i].label, "10.0.0.2") == 0) {
+      sawUnknown = true;
+      TEST_ASSERT_EQUAL_STRING("unknown", controls[i].vendor);
+    } else if (strcmp(controls[i].label, "10.0.0.3") == 0) {
+      sawLocal = true;
+      TEST_ASSERT_EQUAL_STRING("local", controls[i].vendor);
+    }
+  }
+  TEST_ASSERT_TRUE(sawKnown && sawUnknown && sawLocal);
+}
+
 void test_ui_results_row_uses_role_name(void) {
   UiSnapshot snapshot;
   snapshot.phase = UiPhase::Results;
@@ -653,6 +839,9 @@ void setup() {
   RUN_TEST(test_name_sanitize_and_precedence);
   RUN_TEST(test_inventory_name_preserves_host_and_allows_duplicates);
   RUN_TEST(test_ui_host_detail_with_and_without_name);
+  RUN_TEST(test_oui_parse_classify_and_lookup);
+  RUN_TEST(test_inventory_oui_preserves_host_without_table);
+  RUN_TEST(test_ui_manufacturer_states);
   gFailures = UNITY_END();
 }
 

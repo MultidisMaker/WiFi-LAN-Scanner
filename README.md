@@ -49,7 +49,7 @@ The test image keeps that passphrase in RAM only and does not write it to the pr
 
 ## Layout
 
-`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. Hosts already found by the bounded ARP scan can receive a link-local mDNS hostname. OUI enrichment, service enumeration, and inventory persistence are still deferred. `tools/oui/` is not used by this firmware.
+`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. Hosts already found by the bounded ARP scan can receive a link-local mDNS hostname and an offline manufacturer label. Service enumeration and inventory persistence are still deferred. `tools/oui/build_oui_index.py` rebuilds `src/OuiData.gen.inc` from the public IEEE MA-L CSV. See `tools/oui/README.md`.
 
 ## Community
 

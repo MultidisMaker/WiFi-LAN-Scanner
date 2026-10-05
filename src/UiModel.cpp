@@ -18,7 +18,7 @@ void copyLabel(char* dest, size_t destLen, const char* text) {
 }
 
 int appendControl(UiControl* out, int count, int cap, int id, int x, int y, int w, int h, const char* label,
-                  const char* detail, char value, bool latched) {
+                  const char* detail, char value, bool latched, const char* vendor = nullptr) {
   if (count >= cap) {
     return count;
   }
@@ -30,6 +30,7 @@ int appendControl(UiControl* out, int count, int cap, int id, int x, int y, int 
   control.h = h;
   copyLabel(control.label, sizeof(control.label), label);
   copyLabel(control.detail, sizeof(control.detail), detail);
+  copyLabel(control.vendor, sizeof(control.vendor), vendor);
   control.value = value;
   control.latched = latched;
   return count + 1;
@@ -118,7 +119,7 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
         continue;
       }
       count = appendControl(out, count, cap, IdRow0 + row, 6, 40 + row * 52, 210, 48, snapshot.rowLabel[row],
-                            snapshot.rowDetail[row], 0, false);
+                            snapshot.rowDetail[row], 0, false, snapshot.rowVendor[row]);
     }
     count = appendControl(out, count, cap, IdPrev, 6, 430, 64, 40, "Prev", nullptr, 0, false);
     count = appendControl(out, count, cap, IdNext, 76, 430, 64, 40, "Next", nullptr, 0, false);
@@ -132,7 +133,7 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
         continue;
       }
       count = appendControl(out, count, cap, IdRow0 + row, 6, 40 + row * 52, 210, 48, snapshot.rowLabel[row],
-                            snapshot.rowDetail[row], 0, false);
+                            snapshot.rowDetail[row], 0, false, snapshot.rowVendor[row]);
     }
     count = appendControl(out, count, cap, IdPrev, 6, 360, 64, 40, "Prev", nullptr, 0, false);
     count = appendControl(out, count, cap, IdNext, 76, 360, 64, 40, "Next", nullptr, 0, false);
@@ -169,7 +170,7 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
     count = appendControl(out, count, cap, IdProgress, 8, 248, 206, 34, snapshot.progressLabel, snapshot.progressDetail,
                           0, false);
     count = appendControl(out, count, cap, IdNewest, 8, 286, 206, 34, snapshot.newestLabel, snapshot.newestDetail, 0,
-                          false);
+                          false, snapshot.newestVendor);
   }
   count = appendControl(out, count, cap, IdStart, 8, 328, 100, 40, "Start", nullptr, 0, false);
   count = appendControl(out, count, cap, IdPause, 114, 328, 100, 40, "Pause", nullptr, 0, false);

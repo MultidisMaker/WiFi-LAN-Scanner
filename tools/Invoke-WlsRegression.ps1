@@ -89,7 +89,7 @@ function Get-TfMiddleLiveJson {
         $payload = [ordered]@{
             ssid = 'TFMiddle'
             psk = $plain
-            instructionId = 'MM-PenTest-A007'
+            instructionId = 'MM-PenTest-A008'
         }
         return ($payload | ConvertTo-Json -Compress)
     } finally {
