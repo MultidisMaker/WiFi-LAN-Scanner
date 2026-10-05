@@ -28,14 +28,14 @@ Examples checked by `networkRangeSelfTest()`:
 
 A mask such as `255.0.255.0` is rejected because it is not contiguous. The firmware does not substitute `/24`.
 
-## Future scan cap
+## Scan cap
 
-`kFutureScanHostCap` is 256. A later discovery increment must not probe more than the smaller of the usable host count and this cap. The current scanner state machine does not probe hosts at all.
+`kFutureScanHostCap` is 256. `buildCandidatePlan` probes no more than that many eligible on-subnet addresses. Eligible hosts exclude the network address, the broadcast address, and the station. The gateway is included when it is eligible, including when a larger subnet would otherwise push it past the first 256. Silence from a probe is not treated as proof that a host is absent.
 
 ## Touch interaction
 
 Find networks, network rows, Back, Previous, Next, Forget, Start, Pause, Resume, Stop, Reset, keyboard keys, Shift, page, backspace, OK, and close use the same press painter. A pressed control is drawn inverted. Shift stays filled, and its label reads `SHIFT`, while uppercase mode is on. Alphabet keys then draw `A-Z`. They draw `a-z` when Shift is off. Shift does not rewrite characters already in the password buffer. The password field stays masked.
 
-## Deferred discovery
+## Discovery boundary
 
-No ARP sweep, ICMP echo, TCP or UDP probe, mDNS, SSDP, NetBIOS, OUI lookup, packet capture, or inventory file is implemented.
+Local discovery sends one lwIP ARP request at a time on the directly connected station subnet and reads the ARP cache. It does not send ICMP, TCP, UDP, mDNS, SSDP, or NetBIOS, and it does not capture packets, look up OUIs, or write an inventory file. A host that does not answer is left out of the list rather than marked offline.

@@ -1,6 +1,6 @@
 # WiFi LAN Scanner architecture
 
-This increment implements the hardware, Wi-Fi, UI, network-characterization, and scanner-controller foundation. The discovery engine, enrichment engine, inventory model, and inventory persistence service are still deferred. No host-discovery probes are sent.
+This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, and bounded local host-discovery path. Enrichment, service enumeration, and inventory persistence remain deferred.
 
 ## Hardware abstraction
 
@@ -28,11 +28,21 @@ Saved credentials go to ESP32 Preferences namespace `wlan` under keys `ssid` and
 
 `src/NetworkRange.cpp` reads the station IPv4 address, subnet mask, gateway, and DNS servers from the Arduino-ESP32 `WiFi` object and passes them to `deriveNetFacts` in `src/NetMath.cpp`. That shared arithmetic is what host tests exercise. The network address and prefix come from the address AND the mask. Usable host count is `2^(32-prefix) - 2` for a contiguous prefix from 1 through 30. The code does not assume `/24`.
 
-A non-contiguous mask, or a prefix outside 1..30, is reported as an unavailable range. A future discovery pass may examine at most 256 usable hosts (`kFutureScanHostCap`), even if the subnet is larger. This increment does not send those probes. The UI shows the derived range and the cap.
+A non-contiguous mask, or a prefix outside 1..30, is reported as an unavailable range. The scanner does not assume `/24`. It refuses to start when Wi-Fi is disconnected or the range is invalid.
+
+`buildCandidatePlan` in `src/CandidatePlan.cpp` selects who may be probed. Eligible addresses are the usable hosts, excluding the network address, the broadcast address, and the station itself. The gateway is eligible when it is one of those hosts. The plan never walks a huge subnet: it keeps at most 256 addresses (`kFutureScanHostCap`). When more hosts are eligible, it keeps the 256 lowest. If the gateway is eligible and lies above that window, the gateway replaces the highest selected address and the list is sorted ascending again.
+
+## Local discovery
+
+The device sends at most one lwIP ARP request at a time, then reads `etharp_find_addr` on the station netif. Those are the stock lwIP functions declared in the installed Arduino-ESP32 2.x header `lwip/etharp.h` (ESP32-S3 SDK under PlatformIO `framework-arduinoespressif32`). The installed lwIP default `ARP_TABLE_SIZE` is 10, so requests are not pipelined. Each probe waits up to 200 ms. An address outside the station subnet, or the station's own address, is not transmitted. A missing reply is recorded as unanswered and is not shown as Offline. A MAC address is stored only when the ARP cache returns one. The scanner does not send TCP, UDP, ICMP, mDNS, SSDP, NetBIOS, or probes beyond the directly connected subnet.
+
+Host tests and the HIL image use `FakeDiscoveryBackend`. That backend does not transmit. The production image uses `LwipArpBackend`. The HIL serial protocol exists only in the test image.
+
+Observed hosts stay in RAM for the current boot. They are de-duplicated by IPv4 address and, when a MAC is present, by that MAC. A later weaker observation does not erase a MAC already learned. Reset and a new scan clear the list. Nothing is written to NVS, SD, or a file.
 
 ## Scanner controller
 
-`src/ScannerController.cpp` has `IDLE`, `STARTING`, `SCANNING`, `PAUSED`, `STOPPING`, and `COMPLETE`. `STARTING` and `STOPPING` advance on a 200ms timer inside `loop()`. `SCANNING` does not transmit. The touch UI keeps running while states change.
+`src/ScannerController.cpp` has `IDLE`, `STARTING`, `SCANNING`, `PAUSED`, `STOPPING`, and `COMPLETE`. `STARTING` and `STOPPING` advance on a 200 ms timer inside `loop()`. `SCANNING` services one probe step per `loop()` call, so the touch UI keeps running. Pause does not start or finish another candidate. Stop keeps the hosts already observed. Reset returns to a clean idle list.
 
 ## UI / touch
 
@@ -42,8 +52,8 @@ Actionable controls share one geometry list (`collectUiControls` in `src/UiModel
 
 ## Still deferred
 
-- Discovery engine: ARP, ICMP, TCP, UDP, mDNS, SSDP, and NetBIOS
-- Enrichment engine and OUI lookup
-- Inventory model and persistence
-- SD-card scan history
-- T-Display-S3-Pro pins that this increment does not use
+- ICMP, TCP, UDP, mDNS, SSDP, and NetBIOS
+- Enrichment, OUI lookup, and `tools/oui/`
+- Inventory persistence and SD-card scan history
+- T-Display-S3-Pro pins that this firmware does not use
+- A live joined-network check when the board has no technician-entered Wi-Fi credential

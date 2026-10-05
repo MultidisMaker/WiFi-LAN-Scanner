@@ -1,5 +1,7 @@
 #include "NetMath.h"
 
+#include <stdio.h>
+
 #include "BoardConfig.h"
 
 namespace {
@@ -45,6 +47,26 @@ Ipv4 ipv4(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 bool ipv4Equal(const Ipv4& left, const Ipv4& right) {
   return left.octet[0] == right.octet[0] && left.octet[1] == right.octet[1] && left.octet[2] == right.octet[2] &&
          left.octet[3] == right.octet[3];
+}
+
+void formatIpv4(const Ipv4& ip, char* out, size_t outLen) {
+  if (out == nullptr || outLen == 0) {
+    return;
+  }
+  snprintf(out, outLen, "%u.%u.%u.%u", ip.octet[0], ip.octet[1], ip.octet[2], ip.octet[3]);
+}
+
+void formatMac(const uint8_t mac[6], char* out, size_t outLen) {
+  if (out == nullptr || outLen == 0) {
+    return;
+  }
+  if (mac == nullptr) {
+    out[0] = '\0';
+    return;
+  }
+  snprintf(out, outLen, "%02X:%02X:%02X:%02X:%02X:%02X", static_cast<unsigned>(mac[0]), static_cast<unsigned>(mac[1]),
+           static_cast<unsigned>(mac[2]), static_cast<unsigned>(mac[3]), static_cast<unsigned>(mac[4]),
+           static_cast<unsigned>(mac[5]));
 }
 
 NetFacts deriveNetFacts(const Ipv4& address, const Ipv4& mask, const Ipv4& gateway, const Ipv4& dnsPrimary,

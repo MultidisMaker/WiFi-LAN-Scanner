@@ -103,13 +103,17 @@ def run_hil(port, transcript):
         ("TAP 10 440 40 80", "WLS-HIL TAP hit=shift fire=1 cancel=0 shown=11 face=latchedpressed"),
         ("PRESERVE", "WLS-HIL PRESERVE preserved=1 mask=1"),
         ("SCAN", "WLS-HIL SCAN pass=1"),
+        (
+            "DISCOVER",
+            "WLS-HIL DISCOVER scan=1 progress=1 pause=1 resume=1 stopSeen=1 complete=1 hosts=2 mac=1 nomac=1 dup=1 reset=1",
+        ),
     ]
     ok = True
     for command, expected in steps:
         transcript.append("> " + command)
         port.write((command + "\n").encode("ascii"))
         port.flush()
-        timeout = 8 if command == "SCAN" else 4
+        timeout = 8 if command in ("SCAN", "DISCOVER") else 4
         got = wait_for(port, lambda line, expected=expected: line == expected, timeout, transcript)
         if got != expected:
             transcript.append("! expected " + expected)
@@ -126,10 +130,10 @@ def run_boot(port, transcript):
         "WLS display=ok geometry=222x480 expected=222x480",
         "WLS touch probe=0 model=CST226SE",
         "WLS range-selftest=ok cap=256",
-        "WLS scanner-selftest=ok discovery=deferred",
+        "WLS scanner-selftest=ok discovery=local-arp",
         "WLS ui-selftest=ok ackMs=120 faces=4",
         "WLS mask-selftest=ok preserved=yes",
-        "WLS ready discovery=deferred",
+        "WLS ready discovery=local-arp",
     ]
     missing = [item for item in required if item not in text]
     saved_ok = ("WLS wifi saved=yes" in text) or ("WLS wifi saved=no" in text)

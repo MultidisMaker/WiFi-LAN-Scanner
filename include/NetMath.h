@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct Ipv4 {
@@ -24,6 +25,8 @@ struct NetFacts {
 
 Ipv4 ipv4(uint8_t a, uint8_t b, uint8_t c, uint8_t d);
 bool ipv4Equal(const Ipv4& left, const Ipv4& right);
+void formatIpv4(const Ipv4& ip, char* out, size_t outLen);
+void formatMac(const uint8_t mac[6], char* out, size_t outLen);
 
 // Shared range derivation. Prefix must be 1..30 and the mask must be contiguous.
 // Future scan count is min(usable hosts, kFutureScanHostCap). This does not probe.

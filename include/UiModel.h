@@ -19,10 +19,14 @@ enum UiControlId : int {
   IdDel,
   IdOk,
   IdClose,
+  IdReset,
+  IdProgress,
+  IdNewest,
+  IdHosts,
   IdKeyBase = 100
 };
 
-enum class UiPhase : uint8_t { Home, Results, Password };
+enum class UiPhase : uint8_t { Home, Results, Password, Hosts };
 
 struct UiControl {
   int id;
@@ -43,6 +47,11 @@ struct UiSnapshot {
   int keyboardPage = 0;
   int listPage = 0;
   ScanState scan = ScanState::Idle;
+  bool showDashboard = false;
+  char progressLabel[22] = {};
+  char progressDetail[22] = {};
+  char newestLabel[22] = {};
+  char newestDetail[22] = {};
   bool rowPresent[6] = {};
   char rowLabel[6][22] = {};
   char rowDetail[6][22] = {};

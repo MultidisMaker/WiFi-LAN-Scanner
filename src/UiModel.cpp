@@ -83,6 +83,14 @@ const char* uiControlName(int id) {
       return "ok";
     case IdClose:
       return "close";
+    case IdReset:
+      return "reset";
+    case IdProgress:
+      return "progress";
+    case IdNewest:
+      return "newest";
+    case IdHosts:
+      return "hosts";
     default:
       if (id >= IdRow0 && id < IdRow0 + 6) {
         return "row";
@@ -110,6 +118,21 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
     return count;
   }
 
+  if (snapshot.phase == UiPhase::Hosts) {
+    for (int row = 0; row < 6; ++row) {
+      if (!snapshot.rowPresent[row]) {
+        continue;
+      }
+      count = appendControl(out, count, cap, IdRow0 + row, 6, 40 + row * 52, 210, 48, snapshot.rowLabel[row],
+                            snapshot.rowDetail[row], 0, false);
+    }
+    count = appendControl(out, count, cap, IdPrev, 6, 360, 64, 40, "Prev", nullptr, 0, false);
+    count = appendControl(out, count, cap, IdNext, 76, 360, 64, 40, "Next", nullptr, 0, false);
+    count = appendControl(out, count, cap, IdReset, 146, 360, 70, 40, "Reset", nullptr, 0, false);
+    count = appendControl(out, count, cap, IdBack, 6, 410, 210, 40, "Back", nullptr, 0, false);
+    return count;
+  }
+
   if (snapshot.phase == UiPhase::Password) {
     int keyIndex = 0;
     for (int row = 0; row < 5; ++row) {
@@ -134,11 +157,18 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
   if (snapshot.saved) {
     count = appendControl(out, count, cap, IdForget, 8, 112, 206, 34, "Forget network", nullptr, 0, false);
   }
-  count = appendControl(out, count, cap, IdStart, 8, 328, 100, 40,
-                        snapshot.scan == ScanState::Complete ? "Reset" : "Start", nullptr, 0, false);
+  if (snapshot.showDashboard) {
+    count = appendControl(out, count, cap, IdProgress, 8, 248, 206, 34, snapshot.progressLabel, snapshot.progressDetail,
+                          0, false);
+    count = appendControl(out, count, cap, IdNewest, 8, 286, 206, 34, snapshot.newestLabel, snapshot.newestDetail, 0,
+                          false);
+  }
+  count = appendControl(out, count, cap, IdStart, 8, 328, 100, 40, "Start", nullptr, 0, false);
   count = appendControl(out, count, cap, IdPause, 114, 328, 100, 40, "Pause", nullptr, 0, false);
   count = appendControl(out, count, cap, IdResume, 8, 376, 100, 40, "Resume", nullptr, 0, false);
   count = appendControl(out, count, cap, IdStop, 114, 376, 100, 40, "Stop", nullptr, 0, false);
+  count = appendControl(out, count, cap, IdHosts, 8, 420, 100, 40, "Hosts", nullptr, 0, false);
+  count = appendControl(out, count, cap, IdReset, 114, 420, 100, 40, "Reset", nullptr, 0, false);
   return count;
 }
 

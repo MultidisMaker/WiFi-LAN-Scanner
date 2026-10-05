@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "BoardConfig.h"
+#include "FakeDiscovery.h"
+#include "HostInventory.h"
 #include "NetMath.h"
 #include "PasswordBuffer.h"
 #include "ScannerController.h"
@@ -14,6 +17,9 @@
 
 namespace {
 UiSnapshot gSnapshot;
+ScannerController gHilScanner;
+FakeDiscoveryBackend gHilBackend;
+HostInventory gHilDuplicate;
 char gLine[96];
 size_t gUsed = 0;
 bool gOverflow = false;
@@ -59,9 +65,8 @@ void hilSelf() {
                     slash16.prefix == 16 && slash16.usableHosts == 65534 && slash16.futureScanCount == kFutureScanHostCap &&
                     !broken.valid && !slash28.network.octet[3];
   PasswordBuffer buffer;
-  ScannerController scanner;
   const bool pass = pressTrackerSelfTest() && keyGlyphSelfTest() && maskPasswordSelfTest() &&
-                    buffer.preservedAcrossShift() && nets && scanner.selfTest();
+                    buffer.preservedAcrossShift() && nets && gHilScanner.selfTest();
   Serial.printf("WLS-HIL SELF pass=%d\n", pass ? 1 : 0);
 }
 
@@ -96,7 +101,14 @@ void hilPreserve() {
 }
 
 void hilScan() {
-  ScannerController scanner;
+  ScannerController& scanner = gHilScanner;
+  FakeDiscoveryBackend& backend = gHilBackend;
+  scanner.reset();
+  backend.clearScripts();
+  backend.setWaitMs(60000);
+  scanner.setBackend(&backend);
+  scanner.armConnectedFacts(deriveNetFacts(ipv4(192, 168, 0, 20), ipv4(255, 255, 255, 0), ipv4(192, 168, 0, 1),
+                                           ipv4(192, 168, 0, 1), ipv4(0, 0, 0, 0)));
   bool ok = scanner.state() == ScanState::Idle;
   scanner.pause();
   scanner.resume();
@@ -141,6 +153,79 @@ void hilScan() {
   scanner.acknowledge();
   ok = ok && scanner.state() == ScanState::Idle;
   Serial.printf("WLS-HIL SCAN pass=%d\n", ok ? 1 : 0);
+}
+
+void hilDiscover() {
+  ScannerController& scanner = gHilScanner;
+  FakeDiscoveryBackend& backend = gHilBackend;
+  const uint8_t mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+  const NetFacts facts = deriveNetFacts(ipv4(10, 0, 0, 5), ipv4(255, 255, 255, 240), ipv4(10, 0, 0, 1),
+                                        ipv4(10, 0, 0, 1), ipv4(0, 0, 0, 0));
+  scanner.reset();
+  backend.clearScripts();
+  backend.setWaitMs(0);
+  backend.addObservation(ipv4(10, 0, 0, 1), true, mac, true, 5);
+  backend.addObservation(ipv4(10, 0, 0, 2), false, nullptr, false, 0);
+  scanner.setBackend(&backend);
+  scanner.armConnectedFacts(facts);
+  scanner.start();
+  bool scanOk = scanner.state() == ScanState::Starting;
+  delay(kScannerTransitionMs);
+  scanner.loop();
+  scanOk = scanOk && scanner.state() == ScanState::Scanning;
+
+  int guard = 0;
+  while (scanner.processedCount() < 1 && scanner.state() == ScanState::Scanning && guard < 8) {
+    scanner.loop();
+    ++guard;
+  }
+  const bool progress = scanner.processedCount() == 1 && scanner.observedCount() == 1 && scanner.hasLast() &&
+                        ipv4Equal(scanner.lastAddress(), ipv4(10, 0, 0, 1));
+  scanner.pause();
+  const uint16_t seenAtPause = scanner.observedCount();
+  const uint16_t processedAtPause = scanner.processedCount();
+  scanner.loop();
+  scanner.loop();
+  const bool paused = scanner.state() == ScanState::Paused && scanner.observedCount() == seenAtPause &&
+                      scanner.processedCount() == processedAtPause;
+  scanner.resume();
+  const bool resumed = scanner.state() == ScanState::Scanning;
+  scanner.stop();
+  delay(kScannerTransitionMs);
+  scanner.loop();
+  const bool stopKept = scanner.state() == ScanState::Complete && scanner.observedCount() == seenAtPause;
+
+  scanner.reset();
+  const bool resetIdle = scanner.state() == ScanState::Idle && scanner.observedCount() == 0 && !scanner.hasCurrent();
+  scanner.setBackend(&backend);
+  scanner.armConnectedFacts(facts);
+  scanner.start();
+  delay(kScannerTransitionMs);
+  scanner.loop();
+  guard = 0;
+  while (scanner.state() == ScanState::Scanning && guard < 48) {
+    scanner.loop();
+    ++guard;
+  }
+  const ObservedHost* first = scanner.hostAt(0);
+  const ObservedHost* second = scanner.hostAt(1);
+  const bool complete = scanner.state() == ScanState::Complete && scanner.observedCount() == 2 &&
+                        scanner.processedCount() == scanner.candidateCount();
+  const bool macOk = first != nullptr && first->hasMac && ipv4Equal(first->ip, ipv4(10, 0, 0, 1)) && first->mac[0] == 0x02;
+  const bool noMac = second != nullptr && !second->hasMac && ipv4Equal(second->ip, ipv4(10, 0, 0, 2));
+
+  gHilDuplicate.clear();
+  gHilDuplicate.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, mac, true, 5, 10, "fake");
+  gHilDuplicate.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, mac, true, 5, 20, "fake");
+  const ObservedHost* dupHost = gHilDuplicate.at(0);
+  const bool dupOk = gHilDuplicate.count() == 1 && dupHost != nullptr && dupHost->lastSeenMs == 20 &&
+                     dupHost->firstSeenMs == 10;
+
+  Serial.printf(
+      "WLS-HIL DISCOVER scan=%d progress=%d pause=%d resume=%d stopSeen=%d complete=%d hosts=%u mac=%d nomac=%d dup=%d "
+      "reset=%d\n",
+      scanOk ? 1 : 0, progress ? 1 : 0, paused ? 1 : 0, resumed ? 1 : 0, stopKept ? 1 : 0, complete ? 1 : 0,
+      scanner.observedCount(), macOk ? 1 : 0, noMac ? 1 : 0, dupOk ? 1 : 0, resetIdle ? 1 : 0);
 }
 
 void hilUi(const char* line) {
@@ -212,6 +297,8 @@ void hilDispatch(const char* line) {
     hilPreserve();
   } else if (strcmp(line, "SCAN") == 0) {
     hilScan();
+  } else if (strcmp(line, "DISCOVER") == 0) {
+    hilDiscover();
   } else if (strncmp(line, "UI ", 3) == 0) {
     hilUi(line);
   } else if (strncmp(line, "TAP ", 4) == 0) {

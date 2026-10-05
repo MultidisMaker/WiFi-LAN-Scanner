@@ -15,6 +15,7 @@ class ScannerUi {
   PressTracker press_;
   int page_ = 0;
   int keyboardPage_ = 0;
+  bool showingHosts_ = false;
   unsigned long lastDrawMs_ = 0;
   WifiPhase drawnPhase_ = WifiPhase::Idle;
   ScanState drawnScan_ = ScanState::Idle;
@@ -23,6 +24,9 @@ class ScannerUi {
   bool drawnSaved_ = false;
   int drawnPage_ = -1;
   int drawnKeyboard_ = -1;
+  int drawnObserved_ = -1;
+  int drawnProcessed_ = -1;
+  bool drawnHosts_ = false;
   bool force_ = true;
 
   void draw(bool full);

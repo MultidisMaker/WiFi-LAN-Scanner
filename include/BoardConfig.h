@@ -35,11 +35,11 @@ static constexpr int kTouchScl = 6;
 static constexpr int kTouchRst = -1;
 static constexpr int kTouchIrq = -1;
 
-// Future host discovery, not executed in this increment, may examine at most this
-// many usable addresses even when the joined subnet is larger.
+// Active local discovery examines at most this many eligible addresses.
 static constexpr uint32_t kFutureScanHostCap = 256;
 
 static constexpr unsigned long kScannerTransitionMs = 200;
+static constexpr uint32_t kArpProbeWaitMs = 200;
 static constexpr unsigned long kWifiConnectTimeoutMs = 20000;
 static constexpr int kMaxScanResults = 12;
 static constexpr int kMaxSsidLen = 32;
