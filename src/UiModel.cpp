@@ -53,6 +53,14 @@ const UiControl* findControl(const UiControl* controls, int count, int id) {
 }
 }
 
+UiControl* uiScratchControls(int* cap) {
+  static UiControl controls[40];
+  if (cap != nullptr) {
+    *cap = 40;
+  }
+  return controls;
+}
+
 const char* uiControlName(int id) {
   switch (id) {
     case IdFind:
@@ -186,8 +194,9 @@ bool alphabetCaseIs(const UiSnapshot& snapshot, bool upper) {
   UiSnapshot page = snapshot;
   page.phase = UiPhase::Password;
   page.keyboardPage = 0;
-  UiControl controls[40];
-  const int count = collectUiControls(controls, 40, page);
+  int cap = 0;
+  UiControl* controls = uiScratchControls(&cap);
+  const int count = collectUiControls(controls, cap, page);
   const char* lower = "abcdefghijklmnopqrstuvwxyz";
   int seen = 0;
   for (int i = 0; i < count; ++i) {
@@ -204,8 +213,9 @@ bool alphabetCaseIs(const UiSnapshot& snapshot, bool upper) {
 }
 
 UiGesture playTap(const UiSnapshot& snapshot, int x, int y, uint32_t upMs, uint32_t sampleMs) {
-  UiControl controls[40];
-  const int count = collectUiControls(controls, 40, snapshot);
+  int cap = 0;
+  UiControl* controls = uiScratchControls(&cap);
+  const int count = collectUiControls(controls, cap, snapshot);
   const int hit = hitUiControl(controls, count, x, y);
   PressTracker tracker;
   UiGesture gesture;
@@ -223,8 +233,9 @@ UiGesture playTap(const UiSnapshot& snapshot, int x, int y, uint32_t upMs, uint3
 }
 
 UiGesture playDrag(const UiSnapshot& snapshot, int x0, int y0, int x1, int y1, uint32_t moveMs, uint32_t upMs) {
-  UiControl controls[40];
-  const int count = collectUiControls(controls, 40, snapshot);
+  int cap = 0;
+  UiControl* controls = uiScratchControls(&cap);
+  const int count = collectUiControls(controls, cap, snapshot);
   const int first = hitUiControl(controls, count, x0, y0);
   const int second = hitUiControl(controls, count, x1, y1);
   PressTracker tracker;

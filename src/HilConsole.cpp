@@ -14,6 +14,8 @@
 #include "DeviceContext.h"
 #include "FakeDiscovery.h"
 #include "HostInventory.h"
+#include "MdnsEnricher.h"
+#include "NameRecord.h"
 #include "NetMath.h"
 #include "PasswordBuffer.h"
 #include "ScannerController.h"
@@ -221,6 +223,7 @@ void hilLive() {
 
   ScannerController& scanner = deviceScanner();
   scanner.reset();
+  serviceNameEnrichment(scanner);
   scanner.armConnectedFacts(facts);
   scanner.start();
   const bool probeArmed = waitUntilProbe(scanner);
@@ -247,13 +250,22 @@ void hilLive() {
       scanner.loop();
     }
     deviceUiLoop();
+    serviceNameEnrichment(scanner);
     ++guard;
   }
   const bool completeOk = scanner.state() == ScanState::Complete && scanner.processedCount() == scanner.candidateCount() &&
                           scanner.candidateCount() == gLivePlan.count && scanner.candidateCount() <= kCandidateCap;
   const uint16_t seen = scanner.observedCount();
+  const uint32_t enrichStart = millis();
+  const uint32_t enrichBudget = static_cast<uint32_t>(seen) * 400u + 500u;
+  while (!nameEnrichmentIdle(scanner) && static_cast<uint32_t>(millis() - enrichStart) < enrichBudget) {
+    serviceNameEnrichment(scanner);
+    delay(20);
+    deviceUiLoop();
+  }
   const bool dupOk = inventoryUnique(scanner);
   bool gatewaySeen = false;
+  uint16_t named = 0;
   for (uint16_t i = 0; i < scanner.observedCount(); ++i) {
     const ObservedHost* host = scanner.hostAt(i);
     if (host == nullptr) {
@@ -261,6 +273,9 @@ void hilLive() {
     }
     if (ipv4Equal(host->ip, facts.gateway)) {
       gatewaySeen = true;
+    }
+    if (host->name[0] != '\0') {
+      ++named;
     }
     char hostIp[16];
     char hostMac[18];
@@ -270,8 +285,12 @@ void hilLive() {
     } else {
       hostMac[0] = '\0';
     }
-    Serial.printf("WLS-HIL HOST ip=%s mac=%s\n", hostIp, host->hasMac ? hostMac : "none");
+    Serial.printf("WLS-HIL HOST ip=%s mac=%s name=%s source=%s\n", hostIp, host->hasMac ? hostMac : "none",
+                  host->name[0] != '\0' ? host->name : "none", nameSourceLabel(host->nameSource));
   }
+  const uint16_t queried = nameEnrichmentQueryCount();
+  const uint16_t skipped = seen > queried ? static_cast<uint16_t>(seen - queried) : 0;
+  Serial.printf("WLS-HIL ENRICH queried=%u named=%u skipped=%u\n", queried, named, skipped);
 
   scanner.reset();
   scanner.armConnectedFacts(facts);
@@ -324,8 +343,9 @@ void hilKeys() {
   UiSnapshot page = gSnapshot;
   page.phase = UiPhase::Password;
   page.keyboardPage = 0;
-  UiControl controls[40];
-  const int count = collectUiControls(controls, 40, page);
+  int cap = 0;
+  UiControl* controls = uiScratchControls(&cap);
+  const int count = collectUiControls(controls, cap, page);
   ControlFace face = ControlFace::Normal;
   bool found = false;
   for (int i = 0; i < count; ++i) {
@@ -476,6 +496,68 @@ void hilDiscover() {
       scanner.observedCount(), macOk ? 1 : 0, noMac ? 1 : 0, dupOk ? 1 : 0, resetIdle ? 1 : 0);
 }
 
+void hilNames() {
+  const uint8_t macA[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x11};
+  const uint8_t macB[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x12};
+  gHilDuplicate.clear();
+  gHilDuplicate.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, macA, true, 5, 10, "fake");
+  gHilDuplicate.observe(ipv4(10, 0, 0, 2), EvidenceRank::Neighbor, true, macB, true, 6, 11, "fake");
+
+  const bool namedOk = gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "printer.local", NameSource::Mdns) == NameApply::Applied &&
+                       gHilDuplicate.rememberName(ipv4(10, 0, 0, 9), "ghost", NameSource::Mdns) == NameApply::MissingHost &&
+                       strcmp(gHilDuplicate.at(0)->name, "printer") == 0;
+  const bool blankOk = gHilDuplicate.rememberName(ipv4(10, 0, 0, 2), "@@@", NameSource::Mdns) == NameApply::Rejected &&
+                       gHilDuplicate.at(1)->name[0] == '\0' && gHilDuplicate.at(1)->hasMac &&
+                       gHilDuplicate.at(1)->mac[5] == 0x12 && ipv4Equal(gHilDuplicate.at(1)->ip, ipv4(10, 0, 0, 2));
+  const bool keptOk = gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "\t\n", NameSource::Mdns) == NameApply::Rejected &&
+                      gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "aaa-lower", NameSource::ReverseDns) == NameApply::Kept &&
+                      strcmp(gHilDuplicate.at(0)->name, "printer") == 0 && gHilDuplicate.at(0)->mac[5] == 0x11;
+
+  char longName[48];
+  for (int i = 0; i < 47; ++i) {
+    longName[i] = 'c';
+  }
+  longName[47] = '\0';
+  const bool clippedOk = gHilDuplicate.rememberName(ipv4(10, 0, 0, 2), longName, NameSource::Mdns) == NameApply::Applied &&
+                         strlen(gHilDuplicate.at(1)->name) == 31;
+  const bool precedenceOk =
+      gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "alpha", NameSource::Mdns) == NameApply::Applied &&
+      strcmp(gHilDuplicate.at(0)->name, "alpha") == 0 && gHilDuplicate.at(0)->nameSource == NameSource::Mdns;
+  const bool sameOk = gHilDuplicate.rememberName(ipv4(10, 0, 0, 2), "alpha", NameSource::Mdns) == NameApply::Applied &&
+                      gHilDuplicate.count() == 2 && strcmp(gHilDuplicate.at(0)->name, gHilDuplicate.at(1)->name) == 0 &&
+                      strcmp(gHilDuplicate.at(0)->name, "alpha") == 0;
+
+  UiSnapshot snapshot;
+  snapshot.phase = UiPhase::Hosts;
+  snapshot.rowPresent[0] = true;
+  snapshot.rowPresent[1] = true;
+  formatIpv4(gHilDuplicate.at(0)->ip, snapshot.rowLabel[0], sizeof(snapshot.rowLabel[0]));
+  formatIpv4(gHilDuplicate.at(1)->ip, snapshot.rowLabel[1], sizeof(snapshot.rowLabel[1]));
+  formatHostDetail(snapshot.rowDetail[0], sizeof(snapshot.rowDetail[0]), gHilDuplicate.at(0)->nameSource,
+                   gHilDuplicate.at(0)->name, gHilDuplicate.at(0)->hasMac, gHilDuplicate.at(0)->mac);
+  formatHostDetail(snapshot.rowDetail[1], sizeof(snapshot.rowDetail[1]), gHilDuplicate.at(1)->nameSource,
+                   gHilDuplicate.at(1)->name, gHilDuplicate.at(1)->hasMac, gHilDuplicate.at(1)->mac);
+  UiControl controls[8];
+  const int count = collectUiControls(controls, 8, snapshot);
+  const char* detail0 = nullptr;
+  const char* detail1 = nullptr;
+  for (int i = 0; i < count; ++i) {
+    if (strcmp(controls[i].label, "10.0.0.1") == 0) {
+      detail0 = controls[i].detail;
+    } else if (strcmp(controls[i].label, "10.0.0.2") == 0) {
+      detail1 = controls[i].detail;
+    }
+  }
+  const bool uiOk = detail0 != nullptr && detail1 != nullptr && strcmp(detail0, snapshot.rowDetail[0]) == 0 &&
+                    strcmp(detail1, snapshot.rowDetail[1]) == 0 && strcmp(snapshot.rowLabel[0], "10.0.0.1") == 0 &&
+                    strstr(detail0, "m:alpha ") == detail0 && strstr(detail1, "m:alpha ") == detail1;
+
+  Serial.printf("WLS-HIL NAME ip=10.0.0.1 name=%s source=%s\n", gHilDuplicate.at(0)->name,
+                nameSourceLabel(gHilDuplicate.at(0)->nameSource));
+  Serial.printf("WLS-HIL NAMES named=%d blank=%d kept=%d clipped=%d precedence=%d same=%d ui=%d\n", namedOk ? 1 : 0,
+                blankOk ? 1 : 0, keptOk ? 1 : 0, clippedOk ? 1 : 0, precedenceOk ? 1 : 0, sameOk ? 1 : 0, uiOk ? 1 : 0);
+}
+
 void hilUi(const char* line) {
   char mode[16] = {};
   int shift = 0;
@@ -547,6 +629,8 @@ void hilDispatch(const char* line) {
     hilScan();
   } else if (strcmp(line, "DISCOVER") == 0) {
     hilDiscover();
+  } else if (strcmp(line, "NAMES") == 0) {
+    hilNames();
   } else if (strcmp(line, "LIVE") == 0) {
     hilLive();
   } else if (strncmp(line, "UI ", 3) == 0) {

@@ -8,7 +8,7 @@ NVS is plaintext unless flash encryption is enabled. This firmware does not enab
 
 `WiFi.persistent(false)` is set before connection so the ESP32 Arduino stack does not also store the credential in its default Wi-Fi flash area. Forget Network removes the `ssid` and `psk` keys and disconnects the station.
 
-The automated live test does not use this namespace. It associates from a host-supplied transient credential, keeps Wi-Fi storage in RAM, and does not call `storeSaved`. Production firmware has no test passphrase compiled in.
+The automated live test does not use this namespace. It retrieves the `TFMiddle` passphrase from the canonical Agentic credential vault, associates from that transient value, keeps Wi-Fi storage in RAM, and does not call `storeSaved`. The passphrase is not a command-line argument or a repository file. Production firmware has no test passphrase compiled in.
 
 After reboot, a remaining saved SSID is used to reconnect automatically. The password is taken from that NVS entry.
 

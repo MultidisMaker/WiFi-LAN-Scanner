@@ -35,7 +35,7 @@ struct UiControl {
   int w;
   int h;
   char label[22];
-  char detail[22];
+  char detail[40];
   char value;
   bool latched;
 };
@@ -51,10 +51,10 @@ struct UiSnapshot {
   char progressLabel[22] = {};
   char progressDetail[22] = {};
   char newestLabel[22] = {};
-  char newestDetail[22] = {};
+  char newestDetail[40] = {};
   bool rowPresent[6] = {};
   char rowLabel[6][22] = {};
-  char rowDetail[6][22] = {};
+  char rowDetail[6][40] = {};
 };
 
 struct UiGesture {
@@ -67,6 +67,8 @@ struct UiGesture {
 
 const char* uiControlName(int id);
 int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot);
+// One reusable list. Callers must not nest two uses.
+UiControl* uiScratchControls(int* cap);
 int hitUiControl(const UiControl* controls, int count, int x, int y);
 bool alphabetCaseIs(const UiSnapshot& snapshot, bool upper);
 UiGesture playTap(const UiSnapshot& snapshot, int x, int y, uint32_t upMs, uint32_t sampleMs);

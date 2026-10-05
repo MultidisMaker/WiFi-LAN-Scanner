@@ -39,26 +39,24 @@ powershell -NoProfile -File tools\Invoke-WlsHostTests.ps1
 powershell -NoProfile -File tools\Invoke-WlsRegression.ps1
 ```
 
-The default regression is host-native tests plus a synthetic hardware-in-the-loop pass. It does not join Wi-Fi. A live pass is separate and uses a transient credential file that is never committed and never placed on a command line:
+The default regression is host-native tests plus a synthetic hardware-in-the-loop pass. It does not join Wi-Fi. A live pass is separate. `-Live` retrieves the `TFMiddle` passphrase from the canonical Agentic credential vault through `Get-AgenticKeePassCredential.ps1`. The passphrase is not a command-line argument, an environment variable, or a file in this repository.
 
 ```text
-$env:WLS_LIVE_SECRET_FILE = '<path-to-json>'
 powershell -NoProfile -File tools\Invoke-WlsRegression.ps1 -Live
-Remove-Item Env:WLS_LIVE_SECRET_FILE
 ```
 
-That JSON supplies the SSID and passphrase for the one live run. The test image keeps the passphrase in RAM only and does not write it to the production `wlan` NVS namespace. See `docs/testing.md`.
+The test image keeps that passphrase in RAM only and does not write it to the production `wlan` NVS namespace. See `docs/testing.md`.
 
 ## Layout
 
-`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. OUI enrichment, service enumeration, and inventory persistence are still deferred. `tools/oui/` is not used by this firmware.
+`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. Hosts already found by the bounded ARP scan can receive a link-local mDNS hostname. OUI enrichment, service enumeration, and inventory persistence are still deferred. `tools/oui/` is not used by this firmware.
 
 ## Community
 
 - GitHub organization: [MultidisMaker](https://github.com/MultidisMaker)
 - This repository: [WiFi-LAN-Scanner](https://github.com/MultidisMaker/WiFi-LAN-Scanner)
 - YouTube: [MultidisMaker](https://www.youtube.com/@MultidisMaker)
-- Patreon: canonical URL pending confirmation
+- Patreon: [MultidisMaker](https://www.patreon.com/cw/MultidisMaker)
 
 ## License
 

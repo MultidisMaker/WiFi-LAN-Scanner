@@ -5,6 +5,7 @@
 #include "BoardConfig.h"
 #include "DisplayBoard.h"
 #include "LwipArpBackend.h"
+#include "MdnsEnricher.h"
 #include "NetMath.h"
 #include "NetworkRange.h"
 #include "ScannerController.h"
@@ -80,6 +81,7 @@ void loop() {
   gWifi.loop();
   armScannerFromStation();
   gScanner.loop();
+  serviceNameEnrichment(gScanner);
   gUi.loop();
 #if WLS_TEST_MODE
   hilPoll();

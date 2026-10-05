@@ -7,6 +7,7 @@
 
 #include "BoardConfig.h"
 #include "DisplayBoard.h"
+#include "NameRecord.h"
 #include "NetMath.h"
 #include "NetworkRange.h"
 #include "TouchBoard.h"
@@ -75,11 +76,8 @@ int gatherControls(UiControl* out, int cap, const WifiService& wifi, const Scann
       }
       snapshot.rowPresent[row] = true;
       formatIpv4(host->ip, snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]));
-      if (host->hasMac) {
-        formatMac(host->mac, snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]));
-      } else {
-        copyLabel(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), "MAC unknown");
-      }
+      formatHostDetail(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), host->nameSource, host->name,
+                       host->hasMac, host->mac);
     }
   } else if (snapshot.phase == UiPhase::Home) {
     snapshot.showDashboard = true;
@@ -103,11 +101,8 @@ int gatherControls(UiControl* out, int cap, const WifiService& wifi, const Scann
       copyLabel(snapshot.newestDetail, sizeof(snapshot.newestDetail), "none observed");
     } else {
       formatIpv4(newest->ip, snapshot.newestLabel, sizeof(snapshot.newestLabel));
-      if (newest->hasMac) {
-        formatMac(newest->mac, snapshot.newestDetail, sizeof(snapshot.newestDetail));
-      } else {
-        copyLabel(snapshot.newestDetail, sizeof(snapshot.newestDetail), "MAC unknown");
-      }
+      formatHostDetail(snapshot.newestDetail, sizeof(snapshot.newestDetail), newest->nameSource, newest->name,
+                       newest->hasMac, newest->mac);
     }
   }
   return collectUiControls(out, cap, snapshot);
@@ -238,8 +233,9 @@ void ScannerUi::paintControls() {
   if (!deviceDisplay().ready() || wifi_ == nullptr || scanner_ == nullptr) {
     return;
   }
-  UiControl controls[40];
-  const int count = gatherControls(controls, 40, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
+  int cap = 0;
+  UiControl* controls = uiScratchControls(&cap);
+  const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
   Arduino_GFX& gfx = deviceDisplay().panel();
   const int shown = press_.shownId();
   for (int i = 0; i < count; ++i) {
@@ -271,15 +267,17 @@ void ScannerUi::draw(bool full) {
 }
 
 int ScannerUi::hitControl(int x, int y) const {
-  UiControl controls[40];
-  const int count = gatherControls(controls, 40, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
+  int cap = 0;
+  UiControl* controls = uiScratchControls(&cap);
+  const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
   return hitUiControl(controls, count, x, y);
 }
 
 void ScannerUi::dispatch(int id) {
   if (id >= IdKeyBase) {
-    UiControl controls[40];
-    const int count = gatherControls(controls, 40, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
+    int cap = 0;
+    UiControl* controls = uiScratchControls(&cap);
+    const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
     for (int i = 0; i < count; ++i) {
       if (controls[i].id == id && controls[i].value != 0) {
         wifi_->typeChar(controls[i].value);

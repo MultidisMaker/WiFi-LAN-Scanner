@@ -1,9 +1,10 @@
 """Bounded serial helper for WiFi-LAN-Scanner HIL and production boot checks.
 
 Synthetic HIL and production boot modes send only fixed text commands.
-Live mode reads a transient SSID and passphrase from the JSON file named by
-WLS_LIVE_SECRET_FILE, sends them once as an unlogged binary frame, and never
-puts that passphrase on argv, in stdout, or in the transcript.
+Live mode reads a transient SSID and passphrase from stdin JSON when
+--secret-stdin is set, or from the JSON file named by WLS_LIVE_SECRET_FILE.
+It sends them once as an unlogged binary frame and never puts that passphrase
+on argv, in stdout, or in the transcript.
 """
 
 import argparse
@@ -112,13 +113,17 @@ def run_hil(port, transcript):
             "DISCOVER",
             "WLS-HIL DISCOVER scan=1 progress=1 pause=1 resume=1 stopSeen=1 complete=1 hosts=2 mac=1 nomac=1 dup=1 reset=1",
         ),
+        (
+            "NAMES",
+            "WLS-HIL NAMES named=1 blank=1 kept=1 clipped=1 precedence=1 same=1 ui=1",
+        ),
     ]
     ok = True
     for command, expected in steps:
         transcript.append("> " + command)
         port.write((command + "\n").encode("ascii"))
         port.flush()
-        timeout = 8 if command in ("SCAN", "DISCOVER") else 4
+        timeout = 8 if command in ("SCAN", "DISCOVER", "NAMES") else 4
         got = wait_for(port, lambda line, expected=expected: line == expected, timeout, transcript)
         if got != expected:
             transcript.append("! expected " + expected)
@@ -153,17 +158,30 @@ def run_boot(port, transcript):
     return True
 
 
-def load_live_secret():
-    path = os.environ.get("WLS_LIVE_SECRET_FILE", "")
-    if not path:
-        raise RuntimeError("live secret file is not configured")
+def load_live_secret(from_stdin):
+    data = None
+    raw = b""
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, json.JSONDecodeError, UnicodeError):
+        if from_stdin:
+            raw = sys.stdin.buffer.read()
+            if raw.endswith(b"\n"):
+                raw = raw[:-1]
+            if raw.endswith(b"\r"):
+                raw = raw[:-1]
+            data = json.loads(raw.decode("utf-8"))
+        else:
+            path = os.environ.get("WLS_LIVE_SECRET_FILE", "")
+            if not path:
+                raise RuntimeError("live secret file is not configured")
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+    except (OSError, json.JSONDecodeError, UnicodeError, RuntimeError):
         raise RuntimeError("live secret shape rejected")
-    ssid = data.get("ssid", "")
-    psk = data.get("psk", "")
+    finally:
+        raw = b""
+    ssid = data.get("ssid", "") if isinstance(data, dict) else ""
+    psk = data.get("psk", "") if isinstance(data, dict) else ""
+    data = None
     if not isinstance(ssid, str) or not isinstance(psk, str):
         raise RuntimeError("live secret shape rejected")
     if ssid != "TFMiddle" or len(psk) < 1 or len(psk) > 63:
@@ -184,8 +202,8 @@ def remember_line(line, secret, transcript):
     return True
 
 
-def run_live(port, transcript):
-    ssid, psk = load_live_secret()
+def run_live(port, transcript, from_stdin):
+    ssid, psk = load_live_secret(from_stdin)
     ready = wait_for(port, lambda line: line == "WLS-HIL ready", 12, transcript)
     if ready is None:
         hard_reset(port)
@@ -199,7 +217,7 @@ def run_live(port, transcript):
     port.write(frame)
     del frame
     port.flush()
-    deadline = time.time() + 300
+    deadline = time.time() + 420
     pending = b""
     net_ok = False
     live_ok = False
@@ -222,6 +240,8 @@ def run_live(port, transcript):
                         number = token.split("=", 1)[1]
                         if number.isdigit() and 1 <= int(number) <= 256:
                             net_ok = True
+            if "source=dns" in tokens:
+                clean = False
             if line.startswith("WLS-HIL LIVE "):
                 live_ok = "pass=1" in tokens
                 return net_ok and live_ok and clean
@@ -233,6 +253,7 @@ def main():
     parser.add_argument("--port", required=True)
     parser.add_argument("--mode", choices=("hil", "boot", "live"), required=True)
     parser.add_argument("--transcript", required=True)
+    parser.add_argument("--secret-stdin", action="store_true")
     args = parser.parse_args()
     transcript = []
     ok = False
@@ -242,7 +263,7 @@ def main():
             if args.mode == "hil":
                 ok = run_hil(port, transcript)
             elif args.mode == "live":
-                ok = run_live(port, transcript)
+                ok = run_live(port, transcript, args.secret_stdin)
             else:
                 ok = run_boot(port, transcript)
                 if not ok:

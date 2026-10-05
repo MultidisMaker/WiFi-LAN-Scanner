@@ -1,7 +1,8 @@
 # Non-interactive host tests, production build, HIL upload, serial regression,
 # optional live TFMiddle discovery, and production restore. A COM port is
 # discovered at runtime and is never written into PlatformIO configuration.
-# -Live reads the transient credential only from WLS_LIVE_SECRET_FILE.
+# -Live looks up the TFMiddle passphrase through the Agentic credential helper
+# and passes it to Python on stdin. It is not a command-line argument or a file.
 param(
     [string]$WorkDir = '',
     [string]$EvidenceDir = '',
@@ -53,27 +54,111 @@ function Get-PioUsage([string]$Text) {
     }
 }
 
+function Get-TfMiddleLiveJson {
+    $helper = $env:AGENTIC_CREDENTIAL_HELPER_PATH
+    if ([string]::IsNullOrWhiteSpace($helper) -or -not (Test-Path -LiteralPath $helper)) {
+        throw 'live credential helper is unavailable'
+    }
+    $captured = $null
+    try {
+        $captured = @(
+            & $helper -Client 'Multidiscipline-Maker' -Tenant 'Local' -Environment 'Local' -Asset 'TFMiddle' `
+                -AccountType 'WifiPassphrase' -Protocol 'WiFi' -Purpose 'LiveValidation' -Site 'TFMiddle' `
+                -Scope 'JoinedSubnet' -Service 'WiFi-LAN-Scanner' -UserName 'TFMiddle' -Title 'TFMiddle' 2>&1
+        )
+    } catch {
+        throw 'live credential lookup failed'
+    }
+    $cred = $captured | Where-Object { $_ -is [pscredential] } | Select-Object -First 1
+    if ($null -eq $cred) {
+        throw 'live credential lookup failed'
+    }
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($cred.Password)
+    $plain = $null
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        if ([string]::IsNullOrEmpty($plain) -or $plain.Length -gt 63) {
+            throw 'live secret shape rejected'
+        }
+        foreach ($ch in $plain.ToCharArray()) {
+            $code = [int]$ch
+            if ($code -lt 32 -or $code -gt 126) {
+                throw 'live secret shape rejected'
+            }
+        }
+        $payload = [ordered]@{
+            ssid = 'TFMiddle'
+            psk = $plain
+            instructionId = 'MM-PenTest-A007'
+        }
+        return ($payload | ConvertTo-Json -Compress)
+    } finally {
+        $plain = $null
+        if ($bstr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+    }
+}
+
+function Invoke-PythonStdin {
+    param(
+        [Parameter(Mandatory = $true)][string]$Script,
+        [string[]]$Arguments = @(),
+        [AllowEmptyString()][string]$StdinText = ''
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $python
+    $quoted = New-Object System.Collections.Generic.List[string]
+    $quoted.Add(('"{0}"' -f $Script))
+    foreach ($arg in $Arguments) {
+        $quoted.Add(('"{0}"' -f ($arg -replace '"', '\"')))
+    }
+    $psi.Arguments = ($quoted -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $bytes = [Text.Encoding]::UTF8.GetBytes($StdinText)
+    if ($bytes.Length -gt 0) {
+        $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+        $proc.StandardInput.BaseStream.Flush()
+    }
+    $proc.StandardInput.Close()
+    [Array]::Clear($bytes, 0, $bytes.Length)
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $null = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    return [pscustomobject]@{
+        ExitCode = $proc.ExitCode
+        Stdout = $stdout
+    }
+}
+
 function Test-FilesExcludeLiveSecret {
     param(
         [string[]]$Paths,
-        [string]$Label
+        [string]$Label,
+        [string]$SecretJson
     )
     $checkerPath = Join-Path $WorkDir 'image-secret-check.py'
     $checker = @'
 import json
-import os
 import sys
 
 def main():
-    path = os.environ.get("WLS_LIVE_SECRET_FILE", "")
-    if not path:
-        sys.stdout.write("FAIL shape\n")
-        return 1
+    raw = sys.stdin.buffer.read()
+    if raw.endswith(b"\n"):
+        raw = raw[:-1]
+    if raw.endswith(b"\r"):
+        raw = raw[:-1]
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+        payload = json.loads(raw.decode("utf-8"))
         psk = payload.get("psk")
-    except (OSError, json.JSONDecodeError, UnicodeError):
+    except (json.JSONDecodeError, UnicodeError, AttributeError):
         sys.stdout.write("FAIL shape\n")
         return 1
     if not isinstance(psk, str) or not (1 <= len(psk) <= 63):
@@ -86,6 +171,7 @@ def main():
         return 1
     del psk
     del payload
+    raw = b""
     for name in sys.argv[1:]:
         with open(name, "rb") as handle:
             data = handle.read()
@@ -103,8 +189,8 @@ if __name__ == "__main__":
         sys.exit(1)
 '@
     Set-Content -LiteralPath $checkerPath -Value $checker -Encoding utf8
-    $output = @(& $python $checkerPath @Paths)
-    if ($LASTEXITCODE -ne 0 -or ($output -join '') -ne 'PASS') {
+    $result = Invoke-PythonStdin -Script $checkerPath -Arguments $Paths -StdinText $SecretJson
+    if ($result.ExitCode -ne 0 -or $result.Stdout.Trim() -ne 'PASS') {
         throw "credential material present or secret shape rejected ($Label)"
     }
 }
@@ -144,6 +230,7 @@ $hilUploaded = $false
 $failed = $false
 $failReason = ''
 $port = ''
+$script:liveSecretJson = $null
 Push-Location $repo
 try {
     $hostLog = Join-Path $WorkDir 'host-tests.log'
@@ -179,10 +266,8 @@ try {
     Test-AsciiToken -Path $hilBin -Token 'WLS-HIL' -Present $true
     Test-AsciiToken -Path $hilElf -Token 'WLS-HIL' -Present $true
     if ($Live) {
-        if ([string]::IsNullOrWhiteSpace($env:WLS_LIVE_SECRET_FILE)) {
-            throw 'live secret file is not configured'
-        }
-        Test-FilesExcludeLiveSecret -Paths @($prodBin, $prodElf, $hilBin, $hilElf) -Label 'firmware image'
+        $script:liveSecretJson = Get-TfMiddleLiveJson
+        Test-FilesExcludeLiveSecret -Paths @($prodBin, $prodElf, $hilBin, $hilElf) -Label 'firmware image' -SecretJson $script:liveSecretJson
         Write-Step 'IMAGE_SECRET_SCAN=pass'
     }
 
@@ -204,11 +289,13 @@ try {
     }
     if ($Live) {
         $liveTranscript = Join-Path $WorkDir 'live-transcript.txt'
-        & $python $serialTool --port $port --mode live --transcript $liveTranscript
-        if ($LASTEXITCODE -ne 0) {
-            throw "live serial regression exit $LASTEXITCODE"
+        $liveRun = Invoke-PythonStdin -Script $serialTool -Arguments @(
+            '--port', $port, '--mode', 'live', '--transcript', $liveTranscript, '--secret-stdin'
+        ) -StdinText $script:liveSecretJson
+        if ($liveRun.ExitCode -ne 0) {
+            throw "live serial regression exit $($liveRun.ExitCode)"
         }
-        Test-FilesExcludeLiveSecret -Paths @($liveTranscript) -Label 'live transcript'
+        Test-FilesExcludeLiveSecret -Paths @($liveTranscript) -Label 'live transcript' -SecretJson $script:liveSecretJson
         Write-Step 'LIVE_SERIAL=pass'
     }
 
@@ -229,9 +316,13 @@ try {
     Set-Content -Path (Join-Path $WorkDir 'build-size-comparison.txt') -Value ($sizeReport + "`n") -Encoding utf8
 } catch {
     $failed = $true
-    $failReason = $_.Exception.Message
+    $failReason = [string]$_.Exception.Message
+    if ($failReason -match 'psk|passphrase|password' -or $failReason.Length -gt 240) {
+        $failReason = 'live step failed'
+    }
     Write-Step ("REGRESSION_FAIL=" + $failReason)
 } finally {
+    $script:liveSecretJson = $null
     if ($hilUploaded) {
         try {
             if (-not $port) { throw 'Production restore has no discovered port' }

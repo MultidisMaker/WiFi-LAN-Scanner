@@ -215,6 +215,10 @@ uint32_t ScannerController::elapsedMs() const {
 const ObservedHost* ScannerController::hostAt(uint16_t index) const { return inventory_.at(index); }
 const ObservedHost* ScannerController::newest() const { return inventory_.newest(); }
 
+NameApply ScannerController::rememberName(const Ipv4& ip, const char* raw, NameSource source) {
+  return inventory_.rememberName(ip, raw, source);
+}
+
 bool ScannerController::selfTest() {
   DiscoveryBackend* previous = backend_;
   const bool wasConnected = connected_;

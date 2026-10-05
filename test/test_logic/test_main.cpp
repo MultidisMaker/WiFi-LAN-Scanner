@@ -1,9 +1,12 @@
 #include <unity.h>
 
+#include <string.h>
+
 #include "BoardConfig.h"
 #include "CandidatePlan.h"
 #include "FakeDiscovery.h"
 #include "HostInventory.h"
+#include "NameRecord.h"
 #include "NetMath.h"
 #include "PasswordBuffer.h"
 #include "ScanClock.h"
@@ -458,6 +461,159 @@ void test_ui_progress_and_host_rows(void) {
   TEST_ASSERT_EQUAL_STRING("row", uiControlName(gesture.hitId));
 }
 
+void test_name_sanitize_and_precedence(void) {
+  char out[32];
+  TEST_ASSERT_TRUE(sanitizeHostName("printer.local", out, sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("printer", out);
+  TEST_ASSERT_TRUE(sanitizeHostName("Camera.LOCAL.", out, sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("Camera", out);
+  TEST_ASSERT_FALSE(sanitizeHostName("", out, sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("", out);
+  TEST_ASSERT_FALSE(sanitizeHostName("@@@", out, sizeof(out)));
+  TEST_ASSERT_FALSE(sanitizeHostName(nullptr, out, sizeof(out)));
+
+  char longName[80];
+  for (int i = 0; i < 79; ++i) {
+    longName[i] = 'b';
+  }
+  longName[40] = ' ';
+  longName[41] = '/';
+  longName[79] = '\0';
+  TEST_ASSERT_TRUE(sanitizeHostName(longName, out, sizeof(out)));
+  TEST_ASSERT_EQUAL_UINT(31, strlen(out));
+  TEST_ASSERT_EQUAL_CHAR('b', out[0]);
+  TEST_ASSERT_EQUAL_CHAR('b', out[30]);
+
+  TEST_ASSERT_TRUE(preferIncomingName(NameSource::None, "", NameSource::ReverseDns, "dns-name"));
+  TEST_ASSERT_FALSE(preferIncomingName(NameSource::Mdns, "printer", NameSource::ReverseDns, "aaa"));
+  TEST_ASSERT_TRUE(preferIncomingName(NameSource::ReverseDns, "dns-name", NameSource::Mdns, "zzz"));
+  TEST_ASSERT_TRUE(preferIncomingName(NameSource::Mdns, "printer", NameSource::Mdns, "alpha"));
+  TEST_ASSERT_FALSE(preferIncomingName(NameSource::Mdns, "alpha", NameSource::Mdns, "printer"));
+  TEST_ASSERT_FALSE(preferIncomingName(NameSource::Mdns, "alpha", NameSource::Mdns, "alpha"));
+  TEST_ASSERT_FALSE(preferIncomingName(NameSource::Mdns, "alpha", NameSource::Mdns, ""));
+}
+
+void test_inventory_name_preserves_host_and_allows_duplicates(void) {
+  HostInventory inventory;
+  const uint8_t macA[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x11};
+  const uint8_t macB[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x12};
+  inventory.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, macA, true, 5, 10, "fake");
+  inventory.observe(ipv4(10, 0, 0, 2), EvidenceRank::Neighbor, true, macB, true, 6, 11, "fake");
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 9), "ghost", NameSource::Mdns) == NameApply::MissingHost);
+
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "printer.local", NameSource::Mdns) == NameApply::Applied);
+  const ObservedHost* first = inventory.at(0);
+  TEST_ASSERT_TRUE(first != nullptr && strcmp(first->name, "printer") == 0 && first->nameSource == NameSource::Mdns);
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "@@@", NameSource::Mdns) == NameApply::Rejected);
+  TEST_ASSERT_EQUAL_STRING("printer", inventory.at(0)->name);
+  TEST_ASSERT_TRUE(inventory.at(0)->hasMac && inventory.at(0)->mac[5] == 0x11);
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "aaa-lower", NameSource::ReverseDns) == NameApply::Kept);
+  TEST_ASSERT_EQUAL_STRING("printer", inventory.at(0)->name);
+
+  char longName[48];
+  for (int i = 0; i < 47; ++i) {
+    longName[i] = 'c';
+  }
+  longName[47] = '\0';
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 2), "", NameSource::Mdns) == NameApply::Rejected);
+  TEST_ASSERT_TRUE(inventory.at(1)->name[0] == '\0' && inventory.at(1)->hasMac && inventory.at(1)->mac[5] == 0x12);
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 2), longName, NameSource::Mdns) == NameApply::Applied);
+  TEST_ASSERT_EQUAL_UINT(31, strlen(inventory.at(1)->name));
+
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "alpha", NameSource::Mdns) == NameApply::Applied);
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 2), "alpha", NameSource::Mdns) == NameApply::Applied);
+  TEST_ASSERT_TRUE(inventory.count() == 2);
+  TEST_ASSERT_EQUAL_STRING("alpha", inventory.at(0)->name);
+  TEST_ASSERT_EQUAL_STRING("alpha", inventory.at(1)->name);
+  TEST_ASSERT_TRUE(ipv4Equal(inventory.at(0)->ip, ipv4(10, 0, 0, 1)));
+  TEST_ASSERT_TRUE(ipv4Equal(inventory.at(1)->ip, ipv4(10, 0, 0, 2)));
+
+  inventory.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, macA, true, 9, 30, "fake");
+  TEST_ASSERT_TRUE(inventory.count() == 2);
+  TEST_ASSERT_EQUAL_STRING("alpha", inventory.at(0)->name);
+  TEST_ASSERT_EQUAL_UINT(30, inventory.at(0)->lastSeenMs);
+
+  gScanNow = 8000;
+  ScannerController scanner;
+  FakeDiscoveryBackend backend;
+  const NetFacts facts = deriveNetFacts(ipv4(10, 0, 0, 5), ipv4(255, 255, 255, 240), ipv4(10, 0, 0, 1),
+                                        ipv4(10, 0, 0, 1), ipv4(0, 0, 0, 0));
+  armReady(scanner, backend, facts, 0);
+  backend.addObservation(ipv4(10, 0, 0, 1), true, macA, true, 4);
+  reachScanning(scanner);
+  int guard = 0;
+  while (scanner.state() != ScanState::Complete && guard < 48) {
+    scanner.loop();
+    ++guard;
+  }
+  TEST_ASSERT_TRUE(scanner.rememberName(ipv4(10, 0, 0, 1), "scanner-host.local", NameSource::Mdns) == NameApply::Applied);
+  const ObservedHost* scanned = scanner.hostAt(0);
+  TEST_ASSERT_TRUE(scanned != nullptr && strcmp(scanned->name, "scanner-host") == 0);
+  TEST_ASSERT_TRUE(scanned->hasMac && scanned->mac[5] == 0x11);
+  TEST_ASSERT_TRUE(scanner.rememberName(ipv4(10, 0, 0, 3), "missing", NameSource::Mdns) == NameApply::MissingHost);
+}
+
+void test_ui_host_detail_with_and_without_name(void) {
+  const uint8_t mac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+  char unnamed[40];
+  char named[40];
+  formatHostDetail(unnamed, sizeof(unnamed), NameSource::None, "", false, nullptr);
+  TEST_ASSERT_EQUAL_STRING("u:unknown MAC unknown", unnamed);
+  formatHostDetail(named, sizeof(named), NameSource::Mdns, "alpha", true, mac);
+  TEST_ASSERT_EQUAL_STRING("m:alpha 02:11:22:33:44:55", named);
+  char dnsDetail[40];
+  formatHostDetail(dnsDetail, sizeof(dnsDetail), NameSource::ReverseDns, "ns-host", true, mac);
+  TEST_ASSERT_EQUAL_STRING("d:ns-host 02:11:22:33:44:55", dnsDetail);
+
+  char stored[32];
+  for (int i = 0; i < 31; ++i) {
+    stored[i] = 'n';
+  }
+  stored[31] = '\0';
+  char clipped[40];
+  formatHostDetail(clipped, sizeof(clipped), NameSource::Mdns, stored, false, nullptr);
+  TEST_ASSERT_EQUAL_STRING("m:nnnnnnnnnnnnn MAC unknown", clipped);
+
+  UiControl controls[8];
+  UiSnapshot namedRow;
+  namedRow.phase = UiPhase::Hosts;
+  namedRow.rowPresent[0] = true;
+  const char* ip = "10.0.0.1";
+  for (int i = 0; ip[i] != '\0'; ++i) {
+    namedRow.rowLabel[0][i] = ip[i];
+  }
+  for (int i = 0; named[i] != '\0'; ++i) {
+    namedRow.rowDetail[0][i] = named[i];
+  }
+  int count = collectUiControls(controls, 8, namedRow);
+  bool sawNamed = false;
+  for (int i = 0; i < count; ++i) {
+    if (strcmp(controls[i].label, "10.0.0.1") == 0) {
+      sawNamed = true;
+      TEST_ASSERT_EQUAL_STRING("m:alpha 02:11:22:33:44:55", controls[i].detail);
+    }
+  }
+  UiSnapshot unknownRow;
+  unknownRow.phase = UiPhase::Hosts;
+  unknownRow.rowPresent[0] = true;
+  const char* secondIp = "10.0.0.2";
+  for (int i = 0; secondIp[i] != '\0'; ++i) {
+    unknownRow.rowLabel[0][i] = secondIp[i];
+  }
+  for (int i = 0; unnamed[i] != '\0'; ++i) {
+    unknownRow.rowDetail[0][i] = unnamed[i];
+  }
+  count = collectUiControls(controls, 8, unknownRow);
+  bool sawUnknown = false;
+  for (int i = 0; i < count; ++i) {
+    if (strcmp(controls[i].label, "10.0.0.2") == 0) {
+      sawUnknown = true;
+      TEST_ASSERT_EQUAL_STRING("u:unknown MAC unknown", controls[i].detail);
+    }
+  }
+  TEST_ASSERT_TRUE(sawNamed && sawUnknown);
+}
+
 void test_ui_results_row_uses_role_name(void) {
   UiSnapshot snapshot;
   snapshot.phase = UiPhase::Results;
@@ -494,6 +650,9 @@ void setup() {
   RUN_TEST(test_ui_tap_ack_and_drag_off);
   RUN_TEST(test_ui_shift_latch_and_alphabet);
   RUN_TEST(test_ui_results_row_uses_role_name);
+  RUN_TEST(test_name_sanitize_and_precedence);
+  RUN_TEST(test_inventory_name_preserves_host_and_allows_duplicates);
+  RUN_TEST(test_ui_host_detail_with_and_without_name);
   gFailures = UNITY_END();
 }
 

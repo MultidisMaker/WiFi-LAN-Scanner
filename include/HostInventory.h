@@ -1,5 +1,6 @@
 #pragma once
 
+#include "NameRecord.h"
 #include "NetMath.h"
 
 enum class EvidenceRank : uint8_t { None = 0, Answered = 1, Neighbor = 2 };
@@ -14,6 +15,8 @@ struct ObservedHost {
   uint32_t firstSeenMs = 0;
   uint32_t lastSeenMs = 0;
   const char* method = "";
+  char name[32] = {};
+  NameSource nameSource = NameSource::None;
 };
 
 // In-memory only. Reboot clears it. Unanswered probes are not stored.
@@ -27,6 +30,7 @@ class HostInventory {
   const ObservedHost* newest() const;
   void observe(const Ipv4& ip, EvidenceRank evidence, bool hasMac, const uint8_t mac[6], bool hasLatency,
                uint32_t latencyMs, uint32_t seenMs, const char* method);
+  NameApply rememberName(const Ipv4& ip, const char* raw, NameSource source);
 
  private:
   ObservedHost hosts_[kCap] = {};

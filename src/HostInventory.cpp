@@ -89,3 +89,27 @@ void HostInventory::observe(const Ipv4& ip, EvidenceRank evidence, bool hasMac, 
   newest_ = static_cast<int>(count_);
   ++count_;
 }
+
+NameApply HostInventory::rememberName(const Ipv4& ip, const char* raw, NameSource source) {
+  ObservedHost* dest = nullptr;
+  for (uint16_t i = 0; i < count_; ++i) {
+    if (ipv4Equal(hosts_[i].ip, ip)) {
+      dest = &hosts_[i];
+      break;
+    }
+  }
+  if (dest == nullptr) {
+    return NameApply::MissingHost;
+  }
+  char cleaned[32];
+  if (!sanitizeHostName(raw, cleaned, sizeof(cleaned))) {
+    return NameApply::Rejected;
+  }
+  if (!preferIncomingName(dest->nameSource, dest->name, source, cleaned)) {
+    return NameApply::Kept;
+  }
+  memset(dest->name, 0, sizeof(dest->name));
+  memcpy(dest->name, cleaned, strlen(cleaned) + 1);
+  dest->nameSource = source;
+  return NameApply::Applied;
+}

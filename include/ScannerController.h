@@ -42,6 +42,7 @@ class ScannerController {
   uint32_t elapsedMs() const;
   const ObservedHost* hostAt(uint16_t index) const;
   const ObservedHost* newest() const;
+  NameApply rememberName(const Ipv4& ip, const char* raw, NameSource source);
 
  private:
   ScanState state_ = ScanState::Idle;

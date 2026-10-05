@@ -13,6 +13,7 @@ These files are compiled into both the firmware and the host tests:
 - `src/PasswordBuffer.cpp` — typed password state, including Shift preservation
 - `src/ScannerController.cpp` — scanner state machine and discovery scheduling
 - `src/UiModel.cpp` — control geometry and synthetic gestures
+- `src/NameRecord.cpp` — hostname sanitizing, source precedence, and the host-row detail line
 
 `src/ScanClock.cpp` supplies `scanNow()` from `millis()` on the device. Host tests supply their own `scanNow()` so transitions can be stepped without waiting. `src/NetworkRange.cpp` and `src/ScannerUi.cpp` adapt the shared helpers to Arduino types and the panel. They are not part of the host build.
 
@@ -27,12 +28,10 @@ powershell -NoProfile -File tools\Invoke-WlsRegression.ps1
 
 The host command runs `pio test -e native`. The regression command runs that suite, builds the production image, identifies the connected board, uploads the HIL image, runs the synthetic serial script, then uploads the production image again and checks its boot log. It returns a non-zero exit code if any required step fails. If the HIL image was uploaded, the script still attempts to restore production firmware.
 
-`-Live` adds one association and one bounded ARP sweep after the synthetic serial pass and before production restore. Point `WLS_LIVE_SECRET_FILE` at a JSON file with `ssid` and `psk` for that process only. Do not pass the passphrase as an argument, and do not commit the file.
+`-Live` adds one association, one bounded ARP sweep, and mDNS hostname enrichment for hosts that sweep already observed. It runs after the synthetic serial pass and before production restore. The script looks up the `TFMiddle` passphrase in the canonical Agentic credential vault with `Get-AgenticKeePassCredential.ps1` and writes that JSON to the live helper's standard input. Do not pass the passphrase as an argument, and do not commit it.
 
 ```text
-$env:WLS_LIVE_SECRET_FILE = '<path-to-json>'
 powershell -NoProfile -File tools\Invoke-WlsRegression.ps1 -Live
-Remove-Item Env:WLS_LIVE_SECRET_FILE
 ```
 
 `tools/Invoke-WlsRegression.ps1` accepts `-WorkDir` for verbose logs and `-EvidenceDir` for the short transcripts. Neither path is committed.
@@ -47,9 +46,9 @@ Remove-Item Env:WLS_LIVE_SECRET_FILE
 
 The HIL environment extends the production environment and adds only the test-mode macro. `platformio.ini` does not set `upload_port`. The regression script selects the single Espressif USB serial device whose parent id is `VID_303A&PID_1001` and USB serial `80:65:99:A0:3E:70`, then checks `flash_id` for that MAC and a 16MB flash. Zero or multiple matches stop the run.
 
-The production `.bin` and `.elf` must not contain the ASCII token `WLS-HIL`. The HIL image must contain it. HIL replies use that prefix. The synthetic commands are `PING`, `SELF`, `UI`, `TAP`, `DRAG`, `KEYS`, `PRESERVE`, `SCAN`, and `DISCOVER`. They do not join Wi-Fi, print passwords, or offer a general shell. `DISCOVER` runs the scanner against synthetic hosts inside `FakeDiscoveryBackend`. It does not call `WiFi.begin`.
+The production `.bin` and `.elf` must not contain the ASCII token `WLS-HIL`. The HIL image must contain it. HIL replies use that prefix. The synthetic commands are `PING`, `SELF`, `UI`, `TAP`, `DRAG`, `KEYS`, `PRESERVE`, `SCAN`, `DISCOVER`, and `NAMES`. They do not join Wi-Fi, print passwords, or offer a general shell. `DISCOVER` runs the scanner against synthetic hosts inside `FakeDiscoveryBackend`. It does not call `WiFi.begin`. `NAMES` applies deterministic fake hostnames, including a missing name, to that same in-memory inventory and checks the host-row model.
 
-`LIVE` is sent only by `tools/wls_serial.py --mode live`. The host writes the text command, then a length-prefixed SSID and passphrase that are not copied into the transcript. Firmware clears those bytes after `WiFi.begin`, keeps `WiFi.persistent(false)`, and does not call `storeSaved`. The sweep that follows is the production one-step ARP scanner on the derived local subnet, capped at 256 addresses. Silence stays unanswered and is not labeled Offline. The live command refuses a candidate plan that leaves that subnet.
+`LIVE` is sent only by `tools/wls_serial.py --mode live`. The host writes the text command, then a length-prefixed SSID and passphrase that are not copied into the transcript. Firmware clears those bytes after `WiFi.begin`, keeps `WiFi.persistent(false)`, and does not call `storeSaved`. The sweep that follows is the production one-step ARP scanner on the derived local subnet, capped at 256 addresses. Silence stays unanswered and is not labeled Offline. The live command refuses a candidate plan that leaves that subnet. After the sweep, the firmware asks link-local mDNS for a reverse hostname of each host the ARP scan already observed. A missing name stays blank. The resolver learned from DHCP is not queried, because it may sit outside the joined subnet.
 
 ## Host compiler
 
@@ -57,7 +56,7 @@ PlatformIO's native environment needs a host `g++`. On TF-LAPTOP-00 the user-sco
 
 ## What automation proves
 
-The host suite proves the press tracker, face selection, glyph case, masking, password preservation, range math, candidate selection, scanner transitions, synthetic discovery, and hit/tap/drag behavior. The synthetic HIL run proves those functions execute on the T-Display-S3-Pro, including a fake-backend discovery pass, and that the serial protocol is present only in the test image. With `-Live`, the same test image then associates to the supplied SSID, derives the real mask and gateway, and runs one capped on-subnet ARP sweep. The production boot check proves the restored image still prints the foundation banner and its self-tests, and does not print the HIL ready line.
+The host suite proves the press tracker, face selection, glyph case, masking, password preservation, range math, candidate selection, scanner transitions, synthetic discovery, hostname sanitizing and precedence, host-row detail text, and hit/tap/drag behavior. The synthetic HIL run proves those functions execute on the T-Display-S3-Pro, including a fake-backend discovery pass and the fake hostname command, and that the serial protocol is present only in the test image. With `-Live`, the same test image then associates to `TFMiddle`, derives the real mask and gateway, runs one capped on-subnet ARP sweep, and enriches only the hosts that sweep observed. The production boot check proves the restored image still prints the foundation banner and its self-tests, and does not print the HIL ready line.
 
 A person is still required to judge pixel appearance and finger feel. The production image does not embed an automated-test credential. If it has no saved network, it stays disconnected. The live sweep runs only in the test image, and only when `-Live` is requested.
 
