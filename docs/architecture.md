@@ -36,7 +36,7 @@ A non-contiguous mask, or a prefix outside 1..30, is reported as an unavailable 
 
 The device sends at most one lwIP ARP request at a time, then reads `etharp_find_addr` on the station netif. Those are the stock lwIP functions declared in the installed Arduino-ESP32 2.x header `lwip/etharp.h` (ESP32-S3 SDK under PlatformIO `framework-arduinoespressif32`). The installed lwIP default `ARP_TABLE_SIZE` is 10, so requests are not pipelined. Each probe waits up to 200 ms. An address outside the station subnet, or the station's own address, is not transmitted. A missing reply is recorded as unanswered and is not shown as Offline. A MAC address is stored only when the ARP cache returns one. The scanner does not send TCP, UDP, ICMP, mDNS, SSDP, NetBIOS, or probes beyond the directly connected subnet.
 
-Host tests and the HIL image use `FakeDiscoveryBackend`. That backend does not transmit. The production image uses `LwipArpBackend`. The HIL serial protocol exists only in the test image.
+Three layers cover this path. Host-native tests use `FakeDiscoveryBackend` and do not transmit. The synthetic HIL image uses that same fake backend over the serial protocol. The optional live HIL command associates with a transient credential and then uses the production `LwipArpBackend` on the joined subnet only. The HIL serial protocol, including the live command, exists only in the test image. The production image uses `LwipArpBackend` and has no test passphrase.
 
 Observed hosts stay in RAM for the current boot. They are de-duplicated by IPv4 address and, when a MAC is present, by that MAC. A later weaker observation does not erase a MAC already learned. Reset and a new scan clear the list. Nothing is written to NVS, SD, or a file.
 
@@ -56,4 +56,4 @@ Actionable controls share one geometry list (`collectUiControls` in `src/UiModel
 - Enrichment, OUI lookup, and `tools/oui/`
 - Inventory persistence and SD-card scan history
 - T-Display-S3-Pro pins that this firmware does not use
-- A live joined-network check when the board has no technician-entered Wi-Fi credential
+- A technician-entered saved network is still required before the production UI can scan; the automated live check is test-image only

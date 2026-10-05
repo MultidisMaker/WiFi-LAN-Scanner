@@ -1,9 +1,14 @@
 """Bounded serial helper for WiFi-LAN-Scanner HIL and production boot checks.
 
-The script never sends credentials and records only the command transcript.
+Synthetic HIL and production boot modes send only fixed text commands.
+Live mode reads a transient SSID and passphrase from the JSON file named by
+WLS_LIVE_SECRET_FILE, sends them once as an unlogged binary frame, and never
+puts that passphrase on argv, in stdout, or in the transcript.
 """
 
 import argparse
+import json
+import os
 import sys
 import time
 
@@ -148,10 +153,85 @@ def run_boot(port, transcript):
     return True
 
 
+def load_live_secret():
+    path = os.environ.get("WLS_LIVE_SECRET_FILE", "")
+    if not path:
+        raise RuntimeError("live secret file is not configured")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        raise RuntimeError("live secret shape rejected")
+    ssid = data.get("ssid", "")
+    psk = data.get("psk", "")
+    if not isinstance(ssid, str) or not isinstance(psk, str):
+        raise RuntimeError("live secret shape rejected")
+    if ssid != "TFMiddle" or len(psk) < 1 or len(psk) > 63:
+        raise RuntimeError("live secret shape rejected")
+    try:
+        ssid.encode("ascii")
+        psk.encode("ascii")
+    except UnicodeEncodeError:
+        raise RuntimeError("live secret shape rejected")
+    return ssid, psk
+
+
+def remember_line(line, secret, transcript):
+    if secret and secret in line:
+        transcript.append("! secret-line-suppressed")
+        return False
+    transcript.append(line)
+    return True
+
+
+def run_live(port, transcript):
+    ssid, psk = load_live_secret()
+    ready = wait_for(port, lambda line: line == "WLS-HIL ready", 12, transcript)
+    if ready is None:
+        hard_reset(port)
+        set_dtr(port, True)
+        ready = wait_for(port, lambda line: line == "WLS-HIL ready", 12, transcript)
+    if ready is None:
+        return False
+    transcript.append("> LIVE")
+    frame = bytes([len(ssid)]) + ssid.encode("ascii") + bytes([len(psk)]) + psk.encode("ascii")
+    port.write(b"LIVE\n")
+    port.write(frame)
+    del frame
+    port.flush()
+    deadline = time.time() + 300
+    pending = b""
+    net_ok = False
+    live_ok = False
+    clean = True
+    while time.time() < deadline:
+        chunk = port.read(port.in_waiting or 1)
+        if not chunk:
+            continue
+        pending += chunk
+        while b"\n" in pending:
+            raw, pending = pending.split(b"\n", 1)
+            line = raw.decode("ascii", "replace").replace("\r", "").strip()
+            if not remember_line(line, psk, transcript):
+                clean = False
+                continue
+            tokens = line.split()
+            if line.startswith("WLS-HIL NET ") and "ssid=TFMiddle" in tokens and "inside=1" in tokens and "cap=256" in tokens:
+                for token in tokens:
+                    if token.startswith("candidates="):
+                        number = token.split("=", 1)[1]
+                        if number.isdigit() and 1 <= int(number) <= 256:
+                            net_ok = True
+            if line.startswith("WLS-HIL LIVE "):
+                live_ok = "pass=1" in tokens
+                return net_ok and live_ok and clean
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
-    parser.add_argument("--mode", choices=("hil", "boot"), required=True)
+    parser.add_argument("--mode", choices=("hil", "boot", "live"), required=True)
     parser.add_argument("--transcript", required=True)
     args = parser.parse_args()
     transcript = []
@@ -161,6 +241,8 @@ def main():
         try:
             if args.mode == "hil":
                 ok = run_hil(port, transcript)
+            elif args.mode == "live":
+                ok = run_live(port, transcript)
             else:
                 ok = run_boot(port, transcript)
                 if not ok:

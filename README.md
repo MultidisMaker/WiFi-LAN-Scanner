@@ -39,6 +39,16 @@ powershell -NoProfile -File tools\Invoke-WlsHostTests.ps1
 powershell -NoProfile -File tools\Invoke-WlsRegression.ps1
 ```
 
+The default regression is host-native tests plus a synthetic hardware-in-the-loop pass. It does not join Wi-Fi. A live pass is separate and uses a transient credential file that is never committed and never placed on a command line:
+
+```text
+$env:WLS_LIVE_SECRET_FILE = '<path-to-json>'
+powershell -NoProfile -File tools\Invoke-WlsRegression.ps1 -Live
+Remove-Item Env:WLS_LIVE_SECRET_FILE
+```
+
+That JSON supplies the SSID and passphrase for the one live run. The test image keeps the passphrase in RAM only and does not write it to the production `wlan` NVS namespace. See `docs/testing.md`.
+
 ## Layout
 
 `src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. OUI enrichment, service enumeration, and inventory persistence are still deferred. `tools/oui/` is not used by this firmware.
@@ -47,9 +57,8 @@ powershell -NoProfile -File tools\Invoke-WlsRegression.ps1
 
 - GitHub organization: [MultidisMaker](https://github.com/MultidisMaker)
 - This repository: [WiFi-LAN-Scanner](https://github.com/MultidisMaker/WiFi-LAN-Scanner)
-- YouTube: @MultidisMaker
-
-Patreon and any other support channel are not linked here. An exact URL for those channels was not established from the project materials used for this firmware, so none is invented.
+- YouTube: [MultidisMaker](https://www.youtube.com/@MultidisMaker)
+- Patreon: canonical URL pending confirmation
 
 ## License
 

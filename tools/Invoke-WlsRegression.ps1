@@ -1,9 +1,11 @@
 # Non-interactive host tests, production build, HIL upload, serial regression,
-# and production restore. A COM port is discovered at runtime and is never
-# written into PlatformIO configuration.
+# optional live TFMiddle discovery, and production restore. A COM port is
+# discovered at runtime and is never written into PlatformIO configuration.
+# -Live reads the transient credential only from WLS_LIVE_SECRET_FILE.
 param(
     [string]$WorkDir = '',
-    [string]$EvidenceDir = ''
+    [string]$EvidenceDir = '',
+    [switch]$Live
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,6 +50,62 @@ function Get-PioUsage([string]$Text) {
         RamTotal = [int]$ram.Groups[2].Value
         FlashUsed = [int]$flash.Groups[1].Value
         FlashTotal = [int]$flash.Groups[2].Value
+    }
+}
+
+function Test-FilesExcludeLiveSecret {
+    param(
+        [string[]]$Paths,
+        [string]$Label
+    )
+    $checkerPath = Join-Path $WorkDir 'image-secret-check.py'
+    $checker = @'
+import json
+import os
+import sys
+
+def main():
+    path = os.environ.get("WLS_LIVE_SECRET_FILE", "")
+    if not path:
+        sys.stdout.write("FAIL shape\n")
+        return 1
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        psk = payload.get("psk")
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        sys.stdout.write("FAIL shape\n")
+        return 1
+    if not isinstance(psk, str) or not (1 <= len(psk) <= 63):
+        sys.stdout.write("FAIL shape\n")
+        return 1
+    try:
+        needle = psk.encode("ascii")
+    except UnicodeEncodeError:
+        sys.stdout.write("FAIL shape\n")
+        return 1
+    del psk
+    del payload
+    for name in sys.argv[1:]:
+        with open(name, "rb") as handle:
+            data = handle.read()
+        if needle in data:
+            sys.stdout.write("FAIL file\n")
+            return 1
+    sys.stdout.write("PASS\n")
+    return 0
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:
+        sys.stdout.write("FAIL shape\n")
+        sys.exit(1)
+'@
+    Set-Content -LiteralPath $checkerPath -Value $checker -Encoding utf8
+    $output = @(& $python $checkerPath @Paths)
+    if ($LASTEXITCODE -ne 0 -or ($output -join '') -ne 'PASS') {
+        throw "credential material present or secret shape rejected ($Label)"
     }
 }
 
@@ -120,6 +178,13 @@ try {
     Test-AsciiToken -Path $prodElf -Token 'WLS-HIL' -Present $false
     Test-AsciiToken -Path $hilBin -Token 'WLS-HIL' -Present $true
     Test-AsciiToken -Path $hilElf -Token 'WLS-HIL' -Present $true
+    if ($Live) {
+        if ([string]::IsNullOrWhiteSpace($env:WLS_LIVE_SECRET_FILE)) {
+            throw 'live secret file is not configured'
+        }
+        Test-FilesExcludeLiveSecret -Paths @($prodBin, $prodElf, $hilBin, $hilElf) -Label 'firmware image'
+        Write-Step 'IMAGE_SECRET_SCAN=pass'
+    }
 
     $uploadHilLog = Join-Path $WorkDir 'hil-upload.log'
     Invoke-Logged -Name 'hil upload' -LogPath $uploadHilLog -Action {
@@ -136,6 +201,15 @@ try {
     & $python $serialTool --port $port --mode hil --transcript $hilTranscript
     if ($LASTEXITCODE -ne 0) {
         throw "HIL serial regression exit $LASTEXITCODE"
+    }
+    if ($Live) {
+        $liveTranscript = Join-Path $WorkDir 'live-transcript.txt'
+        & $python $serialTool --port $port --mode live --transcript $liveTranscript
+        if ($LASTEXITCODE -ne 0) {
+            throw "live serial regression exit $LASTEXITCODE"
+        }
+        Test-FilesExcludeLiveSecret -Paths @($liveTranscript) -Label 'live transcript'
+        Write-Step 'LIVE_SERIAL=pass'
     }
 
     $sizeReport = @(

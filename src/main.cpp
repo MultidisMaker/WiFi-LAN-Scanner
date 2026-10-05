@@ -44,6 +44,12 @@ DisplayBoard& deviceDisplay() { return gDisplay; }
 
 TouchBoard& deviceTouch() { return gTouch; }
 
+#if WLS_TEST_MODE
+ScannerController& deviceScanner() { return gScanner; }
+
+void deviceUiLoop() { gUi.loop(); }
+#endif
+
 void setup() {
   Serial.begin(115200);
   delay(200);

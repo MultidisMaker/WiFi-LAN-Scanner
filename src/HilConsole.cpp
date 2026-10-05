@@ -3,10 +3,15 @@
 #if WLS_TEST_MODE
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <stdio.h>
 #include <string.h>
 
+#include <esp_wifi.h>
+
 #include "BoardConfig.h"
+#include "CandidatePlan.h"
+#include "DeviceContext.h"
 #include "FakeDiscovery.h"
 #include "HostInventory.h"
 #include "NetMath.h"
@@ -20,6 +25,7 @@ UiSnapshot gSnapshot;
 ScannerController gHilScanner;
 FakeDiscoveryBackend gHilBackend;
 HostInventory gHilDuplicate;
+CandidatePlan gLivePlan;
 char gLine[96];
 size_t gUsed = 0;
 bool gOverflow = false;
@@ -49,6 +55,248 @@ void copyToken(char* dest, size_t destLen, const char* text) {
 }
 
 bool bounded(int value, int low, int high) { return value >= low && value <= high; }
+
+bool readExact(uint8_t* dest, size_t len, uint32_t timeoutMs) {
+  size_t got = 0;
+  const uint32_t start = millis();
+  while (got < len) {
+    if (Serial.available() > 0) {
+      const int raw = Serial.read();
+      if (raw < 0) {
+        continue;
+      }
+      dest[got++] = static_cast<uint8_t>(raw);
+      continue;
+    }
+    if (millis() - start >= timeoutMs) {
+      return false;
+    }
+    delay(1);
+  }
+  return true;
+}
+
+void discardSerial() {
+  while (Serial.available() > 0) {
+    (void)Serial.read();
+  }
+}
+
+void forgetVolatileSta() {
+  wifi_config_t blank = {};
+  (void)esp_wifi_set_config(WIFI_IF_STA, &blank);
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(true, false);
+}
+
+bool waitUntilProbe(ScannerController& scanner) {
+  delay(kScannerTransitionMs);
+  scanner.loop();
+  if (scanner.state() == ScanState::Starting) {
+    delay(30);
+    scanner.loop();
+  }
+  return scanner.state() == ScanState::Scanning && scanner.hasCurrent();
+}
+
+bool onFactsSubnet(const Ipv4& ip, const NetFacts& facts) {
+  for (int i = 0; i < 4; ++i) {
+    if ((ip.octet[i] & facts.mask.octet[i]) != (facts.address.octet[i] & facts.mask.octet[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool planStaysInside(const CandidatePlan& plan, const NetFacts& facts) {
+  if (!plan.valid || plan.count == 0 || plan.count > kCandidateCap) {
+    return false;
+  }
+  for (uint16_t i = 0; i < plan.count; ++i) {
+    const Ipv4& ip = plan.address[i];
+    if (!onFactsSubnet(ip, facts) || ipv4Equal(ip, facts.network) || ipv4Equal(ip, facts.broadcast) ||
+        ipv4Equal(ip, facts.address)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool inventoryUnique(const ScannerController& scanner) {
+  const uint16_t count = scanner.observedCount();
+  for (uint16_t i = 0; i < count; ++i) {
+    const ObservedHost* left = scanner.hostAt(i);
+    if (left == nullptr) {
+      return false;
+    }
+    for (uint16_t j = static_cast<uint16_t>(i + 1); j < count; ++j) {
+      const ObservedHost* right = scanner.hostAt(j);
+      if (right != nullptr && ipv4Equal(left->ip, right->ip)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void hilLive() {
+  uint8_t ssidLen = 0;
+  uint8_t passLen = 0;
+  char ssid[33] = {};
+  char passBuf[64] = {};
+  bool frameOk = readExact(&ssidLen, 1, 2000) && ssidLen >= 1 && ssidLen <= 32 &&
+                 readExact(reinterpret_cast<uint8_t*>(ssid), ssidLen, 2000);
+  if (frameOk) {
+    ssid[ssidLen] = '\0';
+    frameOk = readExact(&passLen, 1, 2000) && passLen <= 63 &&
+              readExact(reinterpret_cast<uint8_t*>(passBuf), passLen, 2000);
+  }
+  if (frameOk) {
+    passBuf[passLen] = '\0';
+  } else {
+    memset(ssid, 0, sizeof(ssid));
+    memset(passBuf, 0, sizeof(passBuf));
+    discardSerial();
+    Serial.println("WLS-HIL LIVE associated=0 status=frame");
+    return;
+  }
+
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.begin(ssid, passBuf);
+  memset(passBuf, 0, sizeof(passBuf));
+  WiFi.setAutoReconnect(false);
+
+  const uint32_t connectStart = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 25000) {
+    delay(100);
+    deviceUiLoop();
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    memset(ssid, 0, sizeof(ssid));
+    Serial.printf("WLS-HIL LIVE associated=0 status=%d\n", static_cast<int>(WiFi.status()));
+    forgetVolatileSta();
+    return;
+  }
+  char joined[33] = {};
+  {
+    const String currentSsid = WiFi.SSID();
+    const size_t joinedLen = currentSsid.length() < sizeof(joined) ? currentSsid.length() : sizeof(joined) - 1;
+    memcpy(joined, currentSsid.c_str(), joinedLen);
+    const bool ssidOk = joinedLen == ssidLen && memcmp(joined, ssid, ssidLen) == 0;
+    memset(ssid, 0, sizeof(ssid));
+    memset(joined, 0, sizeof(joined));
+    if (!ssidOk) {
+      Serial.println("WLS-HIL LIVE associated=0 status=ssid");
+      forgetVolatileSta();
+      return;
+    }
+  }
+
+  const NetFacts facts = deriveNetFacts(ipv4(WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3]),
+                                        ipv4(WiFi.subnetMask()[0], WiFi.subnetMask()[1], WiFi.subnetMask()[2], WiFi.subnetMask()[3]),
+                                        ipv4(WiFi.gatewayIP()[0], WiFi.gatewayIP()[1], WiFi.gatewayIP()[2], WiFi.gatewayIP()[3]),
+                                        ipv4(WiFi.dnsIP(0)[0], WiFi.dnsIP(0)[1], WiFi.dnsIP(0)[2], WiFi.dnsIP(0)[3]),
+                                        ipv4(WiFi.dnsIP(1)[0], WiFi.dnsIP(1)[1], WiFi.dnsIP(1)[2], WiFi.dnsIP(1)[3]));
+  buildCandidatePlanInto(gLivePlan, facts);
+  const bool inside = facts.valid && planStaysInside(gLivePlan, facts);
+  char ip[16];
+  char mask[16];
+  char gateway[16];
+  char dns[16];
+  formatIpv4(facts.address, ip, sizeof(ip));
+  formatIpv4(facts.mask, mask, sizeof(mask));
+  formatIpv4(facts.gateway, gateway, sizeof(gateway));
+  formatIpv4(facts.dnsPrimary, dns, sizeof(dns));
+  Serial.printf("WLS-HIL NET ssid=%.32s ip=%s mask=%s prefix=%u gw=%s dns=%s candidates=%u cap=%u inside=%d gatewayIncluded=%d\n",
+                WiFi.SSID().c_str(), ip, mask, facts.prefix, gateway, dns, gLivePlan.count, kCandidateCap, inside ? 1 : 0,
+                gLivePlan.gatewayIncluded ? 1 : 0);
+  if (!inside) {
+    Serial.println("WLS-HIL LIVE pass=0 pause=0 resume=0 stop=0 complete=0 reset=0 seen=0 dup=0 gatewaySeen=0");
+    forgetVolatileSta();
+    return;
+  }
+
+  ScannerController& scanner = deviceScanner();
+  scanner.reset();
+  scanner.armConnectedFacts(facts);
+  scanner.start();
+  const bool probeArmed = waitUntilProbe(scanner);
+  const uint16_t held = scanner.processedCount();
+  const uint16_t seenHeld = scanner.observedCount();
+  if (probeArmed) {
+    scanner.pause();
+  }
+  delay(250);
+  scanner.loop();
+  deviceUiLoop();
+  const bool pauseOk = probeArmed && scanner.state() == ScanState::Paused && scanner.processedCount() == held &&
+                       scanner.observedCount() == seenHeld;
+  if (pauseOk) {
+    scanner.resume();
+  }
+  const bool resumeOk = pauseOk && scanner.state() == ScanState::Scanning;
+  int guard = 0;
+  const int limit = static_cast<int>(scanner.candidateCount()) * 3 + 8;
+  while (scanner.state() == ScanState::Scanning && guard < limit) {
+    delay(kArpProbeWaitMs);
+    scanner.loop();
+    if (scanner.state() == ScanState::Scanning && !scanner.hasCurrent()) {
+      scanner.loop();
+    }
+    deviceUiLoop();
+    ++guard;
+  }
+  const bool completeOk = scanner.state() == ScanState::Complete && scanner.processedCount() == scanner.candidateCount() &&
+                          scanner.candidateCount() == gLivePlan.count && scanner.candidateCount() <= kCandidateCap;
+  const uint16_t seen = scanner.observedCount();
+  const bool dupOk = inventoryUnique(scanner);
+  bool gatewaySeen = false;
+  for (uint16_t i = 0; i < scanner.observedCount(); ++i) {
+    const ObservedHost* host = scanner.hostAt(i);
+    if (host == nullptr) {
+      continue;
+    }
+    if (ipv4Equal(host->ip, facts.gateway)) {
+      gatewaySeen = true;
+    }
+    char hostIp[16];
+    char hostMac[18];
+    formatIpv4(host->ip, hostIp, sizeof(hostIp));
+    if (host->hasMac) {
+      formatMac(host->mac, hostMac, sizeof(hostMac));
+    } else {
+      hostMac[0] = '\0';
+    }
+    Serial.printf("WLS-HIL HOST ip=%s mac=%s\n", hostIp, host->hasMac ? hostMac : "none");
+  }
+
+  scanner.reset();
+  scanner.armConnectedFacts(facts);
+  scanner.start();
+  const bool stopArmed = waitUntilProbe(scanner);
+  const uint16_t partial = scanner.observedCount();
+  if (stopArmed) {
+    scanner.stop();
+  }
+  delay(kScannerTransitionMs);
+  scanner.loop();
+  if (scanner.state() == ScanState::Stopping) {
+    delay(30);
+    scanner.loop();
+  }
+  const bool stopOk = stopArmed && scanner.state() == ScanState::Complete && scanner.observedCount() == partial;
+  scanner.reset();
+  const bool resetOk = scanner.state() == ScanState::Idle && scanner.observedCount() == 0 && !scanner.hasCurrent();
+  forgetVolatileSta();
+  const bool livePass = pauseOk && resumeOk && stopOk && completeOk && resetOk && dupOk && seen > 0;
+  Serial.printf(
+      "WLS-HIL LIVE pass=%d pause=%d resume=%d stop=%d complete=%d reset=%d seen=%u dup=%d gatewaySeen=%d\n",
+      livePass ? 1 : 0, pauseOk ? 1 : 0, resumeOk ? 1 : 0, stopOk ? 1 : 0, completeOk ? 1 : 0, resetOk ? 1 : 0, seen,
+      dupOk ? 1 : 0, gatewaySeen ? 1 : 0);
+}
 
 void hilSelf() {
   const NetFacts slash24 = deriveNetFacts(ipv4(192, 168, 0, 20), ipv4(255, 255, 255, 0), ipv4(192, 168, 0, 1),
@@ -299,6 +547,8 @@ void hilDispatch(const char* line) {
     hilScan();
   } else if (strcmp(line, "DISCOVER") == 0) {
     hilDiscover();
+  } else if (strcmp(line, "LIVE") == 0) {
+    hilLive();
   } else if (strncmp(line, "UI ", 3) == 0) {
     hilUi(line);
   } else if (strncmp(line, "TAP ", 4) == 0) {
