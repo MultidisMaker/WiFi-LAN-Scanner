@@ -326,7 +326,15 @@ void hilLive() {
   reportResource("before-persist");
   const InventoryStoreResult stored = storeInventoryOnSd();
   reportResource("after-persist");
-  Serial.printf("WLS-HIL PERSIST live=%s\n", stored.status == InventoryStoreStatus::Stored ? "stored" : "unavailable");
+  const char* liveLabel = "fail";
+  if (stored.status == InventoryStoreStatus::Stored) {
+    liveLabel = "stored";
+  } else if (stored.status == InventoryStoreStatus::Absent) {
+    liveLabel = "absent";
+  } else if (stored.status == InventoryStoreStatus::Unavailable) {
+    liveLabel = "unavailable";
+  }
+  Serial.printf("WLS-HIL PERSIST live=%s\n", liveLabel);
 
   scanner.reset();
   scanner.armConnectedFacts(facts);
@@ -899,13 +907,9 @@ void hilPersist() {
   const bool roundtrip = published && repeat && missingOk && keptStates && finalFile != nullptr &&
                          strcmp(finalFile->body, gExportCsv) == 0 && hilRamFind(temporary) == nullptr &&
                          strstr(gExportCsv, inventoryCsvHeader()) != nullptr;
-  const InventoryStoreResult stored = storeInventoryOnSd();
-  const bool sdUnavailable = stored.status == InventoryStoreStatus::Unavailable && stored.detail != nullptr &&
-                             strcmp(stored.detail, "contract-unproven") == 0;
   Serial.printf("WLS-HIL PERSIST path=%s\n", path);
-  Serial.printf("WLS-HIL PERSISTS roundtrip=%d comma=%d quote=%d newline=%d secret=%d sd=%s\n", roundtrip ? 1 : 0,
-                commaOk ? 1 : 0, quoteOk ? 1 : 0, newlineOk ? 1 : 0, secret ? 1 : 0,
-                sdUnavailable ? "unavailable" : "other");
+  Serial.printf("WLS-HIL PERSISTS roundtrip=%d comma=%d quote=%d newline=%d secret=%d sd=skipped\n", roundtrip ? 1 : 0,
+                commaOk ? 1 : 0, quoteOk ? 1 : 0, newlineOk ? 1 : 0, secret ? 1 : 0);
 }
 
 struct HilTrace {
@@ -1028,6 +1032,17 @@ void hilDispatch(const char* line) {
     hilActions();
   } else if (strcmp(line, "PERSIST") == 0) {
     hilPersist();
+  } else if (strcmp(line, "SDPROBE") == 0) {
+    const SdProbeResult probe = probeSdMedia();
+    if (strcmp(probe.result, "stored") == 0) {
+      Serial.printf("WLS-HIL SDPROBE result=stored bytes=%lu match=%d removed=%d display=%s\n",
+                    static_cast<unsigned long>(probe.bytes), probe.match ? 1 : 0, probe.removed ? 1 : 0,
+                    probe.displayOk ? "ok" : "fail");
+    } else if (strcmp(probe.result, "absent") == 0) {
+      Serial.println("WLS-HIL SDPROBE result=absent display=ok");
+    } else {
+      Serial.printf("WLS-HIL SDPROBE result=fail stage=%s\n", probe.stage != nullptr ? probe.stage : "unknown");
+    }
   } else if (strcmp(line, "LIVE") == 0) {
     hilLive();
   } else if (strncmp(line, "UI ", 3) == 0) {

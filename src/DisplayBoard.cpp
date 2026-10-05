@@ -10,6 +10,10 @@ DisplayBoard* gBoard = nullptr;
 
 bool DisplayBoard::begin() {
   gBoard = this;
+  pinMode(kSdCs, OUTPUT);
+  digitalWrite(kSdCs, HIGH);
+  pinMode(kTftCs, OUTPUT);
+  digitalWrite(kTftCs, HIGH);
   if (gPanel == nullptr) {
     gBus = new Arduino_ESP32SPI(kTftDc, kTftCs, kTftSck, kTftMosi, kTftMiso);
     gPanel = new Arduino_ST7796(gBus, kTftRst, 0, true, kPanelWidth, kPanelHeight, kPanelColOffset,

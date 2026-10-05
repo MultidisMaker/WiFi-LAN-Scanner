@@ -7,8 +7,10 @@ This firmware is intended to build an on-device inventory of devices on a networ
 ## Target hardware
 
 - Board family: LILYGO T-Display-S3-Pro
-- MCU: ESP32-S3
+- MCU: ESP32-S3R8
+- Flash / PSRAM: 16 MB flash and 8 MB OPI PSRAM
 - Display: 2.33-inch 222x480 touch display
+- SD: shared SPI with the panel, chip-select GPIO 14
 
 The current firmware is the Wi-Fi foundation for the LILYGO T-Display-S3-Pro. It provides touchscreen Wi-Fi setup with press-and-release controls, a latched Shift key, NVS-backed saved networks, IPv4 network characterization, and bounded local host discovery on the directly connected subnet. See `docs/architecture.md` and `docs/wifi-foundation.md`.
 
@@ -49,7 +51,7 @@ The test image keeps that passphrase in RAM only and does not write it to the pr
 
 ## Layout
 
-`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. Hosts already found by the bounded ARP scan can receive a link-local mDNS hostname and an offline manufacturer label. Positive observations can be serialized as schema-1 CSV under `/LANScanner/scans/`. The firmware does not mount an SD card, because the T-Display-S3-Pro SD pins are not named by the installed board examples. Touch actions and a future Remote client share one action dispatcher. No Remote transport is implemented. Service enumeration is still deferred. `tools/oui/build_oui_index.py` rebuilds `src/OuiData.gen.inc` from the public IEEE MA-L CSV. See `tools/oui/README.md` and `docs/persistence.md`.
+`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. Hosts already found by the bounded ARP scan can receive a link-local mDNS hostname and an offline manufacturer label. Positive observations are written as schema-1 CSV under `/LANScanner/scans/` on the onboard SD card when a card is present. Touch actions and a future Remote client share one action dispatcher. No Remote transport is implemented. Service enumeration is still deferred. `tools/oui/build_oui_index.py` rebuilds `src/OuiData.gen.inc` from the public IEEE MA-L CSV. See `tools/oui/README.md` and `docs/persistence.md`.
 
 ## Community
 

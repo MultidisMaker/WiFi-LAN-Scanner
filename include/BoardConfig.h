@@ -17,9 +17,14 @@
 // and reset/irq left at -1 because no installed Pro source names those GPIOs.
 // This increment does not assign a touch reset or interrupt pin.
 //
-// SD contract: the same GFX LILYGO_T_DISPLAY_S3_PRO block and pro_profile.h do not
-// name an SD chip-select, SPI bus, or SDMMC pin. This firmware does not invent one
-// and does not call SD.begin. Display SPI pins above stay with the panel.
+// SD contract, reconciled with the current LilyGO T-Display-S3-Pro tree
+// (examples/factory/utilities.h, "SD , TFT share SPI Bus"):
+//   BOARD_SPI_MISO 8, BOARD_SPI_MOSI 17, BOARD_SPI_SCK 18,
+//   BOARD_TFT_CS 39, BOARD_SD_CS 14.
+// Those SPI and TFT CS values match the display pins above. GPIO 14 is the SD
+// chip-select on that shared bus. The non-Pro variant pins (SPI 12/13/11, SS 10,
+// and button GPIO 14) are a different board and are not used.
+// Hold the SD chip-select high before display traffic. Pass format_if_empty=false.
 
 static constexpr int kPanelWidth = 222;
 static constexpr int kPanelHeight = 480;
@@ -38,6 +43,9 @@ static constexpr int kTouchSda = 5;
 static constexpr int kTouchScl = 6;
 static constexpr int kTouchRst = -1;
 static constexpr int kTouchIrq = -1;
+
+static constexpr int kSdCs = 14;
+static constexpr uint32_t kSdSpiHz = 4000000;
 
 // Active local discovery examines at most this many eligible addresses.
 static constexpr uint32_t kFutureScanHostCap = 256;

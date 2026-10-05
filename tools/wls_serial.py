@@ -89,6 +89,9 @@ def run_hil(port, transcript):
         ready = wait_for(port, lambda line: line == "WLS-HIL ready", 12, transcript)
     if ready is None:
         return False
+    if not any(line.startswith("WLS psram-alloc=ok ") for line in transcript):
+        transcript.append("! psram-alloc-missing")
+        return False
     steps = [
         ("PING", "WLS-HIL PONG"),
         ("SELF", "WLS-HIL SELF pass=1"),
@@ -128,7 +131,7 @@ def run_hil(port, transcript):
         ),
         (
             "PERSIST",
-            "WLS-HIL PERSISTS roundtrip=1 comma=1 quote=1 newline=1 secret=0 sd=unavailable",
+            "WLS-HIL PERSISTS roundtrip=1 comma=1 quote=1 newline=1 secret=0 sd=skipped",
         ),
     ]
     ok = True
@@ -142,7 +145,29 @@ def run_hil(port, transcript):
             transcript.append("! expected " + expected)
             ok = False
             break
-    return ok
+    if not ok:
+        return False
+    transcript.append("> SDPROBE")
+    port.write(b"SDPROBE\n")
+    port.flush()
+    got = wait_for(port, lambda line: line.startswith("WLS-HIL SDPROBE "), 20, transcript)
+    if got is None:
+        transcript.append("! sdprobe-timeout")
+        return False
+    if got == "WLS-HIL SDPROBE result=absent display=ok":
+        transcript.append("SD_HIL=absent")
+        return True
+    tokens = got.split()
+    if (
+        got.startswith("WLS-HIL SDPROBE result=stored ")
+        and "match=1" in tokens
+        and "removed=1" in tokens
+        and "display=ok" in tokens
+    ):
+        transcript.append("SD_HIL=stored")
+        return True
+    transcript.append("! sdprobe " + got)
+    return False
 
 
 def run_boot(port, transcript):
@@ -157,6 +182,7 @@ def run_boot(port, transcript):
         "WLS ui-selftest=ok ackMs=120 faces=4",
         "WLS mask-selftest=ok preserved=yes",
         "WLS ready discovery=local-arp",
+        "WLS psram-alloc=ok",
     ]
     missing = [item for item in required if item not in text]
     saved_ok = ("WLS wifi saved=yes" in text) or ("WLS wifi saved=no" in text)

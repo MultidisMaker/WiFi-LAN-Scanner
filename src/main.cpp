@@ -94,6 +94,9 @@ void deviceUiLoop() { gUi.loop(); }
 
 void setup() {
   Serial.begin(115200);
+  // A full USB-CDC transmit buffer otherwise waits forever and setup never
+  // reaches the ready line on the HIL image.
+  Serial.setTxTimeoutMs(1000);
   delay(200);
   Serial.println("WLS boot WiFi-LAN-Scanner foundation");
   const bool displayOk = gDisplay.begin();
@@ -111,7 +114,9 @@ void setup() {
                 static_cast<unsigned long>(PressTracker::kAckMs));
   Serial.printf("WLS mask-selftest=%s preserved=%s\n", maskOk && preservedOk ? "ok" : "fail", preservedOk ? "yes" : "no");
   gScanner.setBackend(&gArp);
+  bindInventoryScanner(&gScanner);
   gUi.begin(gWifi, gScanner);
+  reportPsramProbe();
   reportResource("ready");
   Serial.println("WLS ready discovery=local-arp");
 #if WLS_TEST_MODE

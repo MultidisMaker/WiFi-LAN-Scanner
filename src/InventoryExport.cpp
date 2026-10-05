@@ -130,8 +130,8 @@ void inventoryRowFromHost(InventoryRow& row, const ObservedHost& host) {
   }
 }
 
-bool formatInventoryCsv(char* out, int cap, const InventoryMeta& meta, const InventoryRow* rows, int rowCount) {
-  if (out == nullptr || cap < 2 || rowCount < 0 || (rowCount > 0 && rows == nullptr)) {
+bool formatInventoryPreamble(char* out, int cap, const InventoryMeta& meta) {
+  if (out == nullptr || cap < 2) {
     return false;
   }
   int used = 0;
@@ -154,13 +154,38 @@ bool formatInventoryCsv(char* out, int cap, const InventoryMeta& meta, const Inv
     out[0] = '\0';
     return false;
   }
+  return true;
+}
+
+bool formatInventoryRowLine(char* out, int cap, const InventoryRow& row) {
+  if (out == nullptr || cap < 2) {
+    return false;
+  }
+  int used = 0;
+  out[0] = '\0';
+  if (!appendField(out, cap, &used, row.ip, false) || !appendField(out, cap, &used, row.mac, false) ||
+      !appendField(out, cap, &used, row.method, false) || !appendField(out, cap, &used, row.name, false) ||
+      !appendField(out, cap, &used, row.nameSource, false) || !appendField(out, cap, &used, row.macClass, false) ||
+      !appendField(out, cap, &used, row.ouiState, false) || !appendField(out, cap, &used, row.manufacturer, true) ||
+      !appendChar(out, cap, &used, '\n')) {
+    out[0] = '\0';
+    return false;
+  }
+  return true;
+}
+
+bool formatInventoryCsv(char* out, int cap, const InventoryMeta& meta, const InventoryRow* rows, int rowCount) {
+  if (out == nullptr || cap < 2 || rowCount < 0 || (rowCount > 0 && rows == nullptr)) {
+    return false;
+  }
+  if (!formatInventoryPreamble(out, cap, meta)) {
+    out[0] = '\0';
+    return false;
+  }
+  int used = static_cast<int>(strlen(out));
   for (int i = 0; i < rowCount; ++i) {
-    const InventoryRow& row = rows[i];
-    if (!appendField(out, cap, &used, row.ip, false) || !appendField(out, cap, &used, row.mac, false) ||
-        !appendField(out, cap, &used, row.method, false) || !appendField(out, cap, &used, row.name, false) ||
-        !appendField(out, cap, &used, row.nameSource, false) || !appendField(out, cap, &used, row.macClass, false) ||
-        !appendField(out, cap, &used, row.ouiState, false) || !appendField(out, cap, &used, row.manufacturer, true) ||
-        !appendChar(out, cap, &used, '\n')) {
+    char line[384];
+    if (!formatInventoryRowLine(line, static_cast<int>(sizeof(line)), rows[i]) || !appendText(out, cap, &used, line)) {
       out[0] = '\0';
       return false;
     }

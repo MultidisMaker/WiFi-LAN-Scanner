@@ -1081,6 +1081,13 @@ void test_inventory_csv_escape_and_publish(void) {
   char again[4096];
   TEST_ASSERT_TRUE(formatInventoryCsv(csv, static_cast<int>(sizeof(csv)), meta, rows, 6));
   TEST_ASSERT_TRUE(formatInventoryCsv(again, static_cast<int>(sizeof(again)), meta, rows, 6));
+  char preamble[512];
+  char rowLine[384];
+  TEST_ASSERT_TRUE(formatInventoryPreamble(preamble, static_cast<int>(sizeof(preamble)), meta));
+  TEST_ASSERT_TRUE(strncmp(csv, preamble, strlen(preamble)) == 0);
+  TEST_ASSERT_TRUE(formatInventoryRowLine(rowLine, static_cast<int>(sizeof(rowLine)), rows[2]));
+  TEST_ASSERT_TRUE(strstr(rowLine, "\"Say \"\"hi\"\"\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, rowLine) != nullptr);
   TEST_ASSERT_TRUE(strcmp(csv, again) == 0);
   TEST_ASSERT_TRUE(strstr(csv, "# schema=1\n") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, "# sequence=1\n") != nullptr);

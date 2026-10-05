@@ -12,7 +12,9 @@ The file has no Wi-Fi passphrase, vault material, or packet capture. JSON is not
 
 ## SD hardware
 
-The installed GFX Library for Arduino 1.4.6 example `Arduino_GFX_dev_device.h`, branch `LILYGO_T_DISPLAY_S3_PRO`, names the panel pins only. `include/BoardConfig.h` records that mapping and the touch bus from `pro_profile.h` (SDA 5, SCL 6, reset and irq unset). Neither source names an SD chip-select, shared-SPI device, or SDMMC pin. This firmware does not invent one, does not call `SD.begin`, and does not format or erase a card. `storeInventoryOnSd` returns `contract-unproven`. Real SD hardware-in-the-loop was not performed. Host tests and the synthetic `PERSIST` command exercise the serializer in memory.
+LilyGO T-Display-S3-Pro `examples/factory/utilities.h` says the SD socket and the TFT share one SPI bus: MISO GPIO 8, MOSI GPIO 17, SCK GPIO 18, TFT chip-select GPIO 39, SD chip-select GPIO 14. Those display pins are the ones this firmware already used. `SD.begin` is called with the SD chip-select, that SPI object, 4 MHz, mount point `/sd`, and `format_if_empty=false`. The firmware never formats, repartitions, or erases the card. GPIO 14 is held high before the panel is started and both chip-selects are left high after an SD transaction.
+
+The card path is `/LANScanner/scans/scan-########.csv`. The writer creates those directories when they are missing, writes `path.tmp`, and renames it onto a sequence name that is not already present. Rows are written one at a time. A missing card is reported as `media-absent` and is not retried for the rest of that boot. The host build of `storeInventoryOnSd` still returns `contract-unproven`. The synthetic `PERSIST` command stays in RAM and prints `sd=skipped`. The test image's `SDPROBE` command writes, reads back, and deletes only `/LANScanner/scans/a010-wls-sdhil.csv`.
 
 ## Resource telemetry
 
@@ -28,4 +30,4 @@ Touch input becomes an `AppAction`. `applyAppAction` is the only behavior implem
 
 ## What each layer proves
 
-Host-native tests prove escaping, repeated serialization, the rename publish, action parity, and the resource line. Synthetic HIL proves those paths run on the T-Display-S3-Pro and that the SD store stays unavailable. Live TFMiddle proves the joined-subnet scan and prints resource samples around that scan. It does not prove a file on an SD card. SD hardware-in-the-loop remains not run.
+Host-native tests prove escaping, repeated serialization, the rename publish, action parity, and the resource line. Synthetic HIL proves those paths run on the T-Display-S3-Pro. `SDPROBE` then proves the shared-bus card path when a card is inserted, or reports the socket empty without failing the serializer. Live TFMiddle proves the joined-subnet scan, prints resource samples around that scan, and uses the same production writer.

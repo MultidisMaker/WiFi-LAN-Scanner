@@ -6,7 +6,7 @@
 #include "HostInventory.h"
 
 // Schema-1 CSV for positive observations only. Unanswered addresses are not rows.
-// The device does not mount SD until the board pin contract is known.
+// The device streams these pieces to the SD card. It does not assemble the whole file in RAM.
 
 struct InventoryMeta {
   uint32_t sequence = 0;
@@ -36,6 +36,12 @@ struct PublishSink {
 
 const char* inventoryCsvHeader();
 bool inventoryScanPath(char* out, size_t cap, uint32_t sequence);
+
+// Metadata, including the header line and its trailing newline. No host rows.
+bool formatInventoryPreamble(char* out, int cap, const InventoryMeta& meta);
+
+// One host row plus its trailing newline. No metadata.
+bool formatInventoryRowLine(char* out, int cap, const InventoryRow& row);
 
 // Manufacturer text is copied only when the host state is Known.
 void inventoryRowFromHost(InventoryRow& row, const ObservedHost& host);

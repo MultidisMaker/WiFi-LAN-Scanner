@@ -1,6 +1,6 @@
 # WiFi LAN Scanner architecture
 
-This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, and offline manufacturer enrichment for hosts that discovery already found. Positive observations can be serialized as CSV. The SD card is not mounted. Service enumeration and a Remote transport remain deferred.
+This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, offline manufacturer enrichment, and schema-1 CSV persistence for hosts that discovery already found. Service enumeration and a Remote transport remain deferred.
 
 ## Hardware abstraction
 
@@ -14,9 +14,9 @@ Source file: `Arduino_GFX_dev_device.h` in GFX Library for Arduino 1.4.6, branch
 
 Touch uses SensorLib 0.1.6 `TouchDrvCSTXXX`, vendored at `lib/SensorLib` from the installed 0.1.6 tree, at CST226SE address `0x5A` on SDA 5 / SCL 6. Reset and interrupt stay at -1. Those I2C pins and the unassigned reset/irq pins are the observed Pro touch path recorded by the local diagnostic `Documents\MakerNexus\GarageController\Firmware\src\pro_profile.h`. The non-Pro 170x320 parallel panel pins are not used.
 
-The PlatformIO board id remains `lilygo-t-display-s3` because that is the installed ESP32-S3 / 16MB-flash target. It does not supply the Pro panel map.
+The PlatformIO board id remains `lilygo-t-display-s3` because that is the installed ESP32-S3 / 16MB-flash target. Its `memory_type` is `qio_opi`. This project repeats `board_build.arduino.memory_type = qio_opi` and defines `BOARD_HAS_PSRAM`. Without that macro the Arduino core undefines `CONFIG_SPIRAM`, and `ESP.getPsramSize()` stays 0 even on an ESP32-S3R8 module. The Pro panel map still comes from `BoardConfig.h`, not from the non-Pro variant header.
 
-Camera, PMIC, ambient light, SD, and buttons are not initialized. No installed Pro source used here names a touch reset, touch interrupt, or button GPIO, so none is guessed.
+The onboard SD socket uses the display SPI bus. LilyGO `examples/factory/utilities.h` names MISO 8, MOSI 17, SCK 18, TFT CS 39, and SD CS 14. Firmware holds GPIO 14 high before the panel starts, passes those same clock and data pins to `SPI.begin` when a save or SD probe needs the bus, and calls `SD.begin` with `format_if_empty=false`. Camera, PMIC, ambient light, and buttons are not initialized. Touch reset and interrupt stay at -1.
 
 ## Wi-Fi manager
 
@@ -64,7 +64,7 @@ Actionable controls share one geometry list (`collectUiControls` in `src/UiModel
 
 `include/InventoryExport.h` writes schema-1 CSV for hosts the scan already observed. The directory is `/LANScanner/scans/`. A publish writes `path.tmp` and renames it to the final name. Unanswered addresses are omitted. Local, group, unknown, and unavailable manufacturer states stay explicit, and a label is stored only for a known global assignment. The CSV has no passphrase column. See `docs/persistence.md`.
 
-`storeInventoryOnSd` returns unavailable. The installed GFX `LILYGO_T_DISPLAY_S3_PRO` example and the touch profile do not name an SD chip-select or SDMMC bus, so the firmware does not call `SD.begin` and does not choose a pin.
+`storeInventoryOnSd` streams that CSV to `/LANScanner/scans/scan-########.csv` on the device. The host build has no card and still returns `contract-unproven`. A missing card stays `media-absent` and does not format the socket. The synthetic `PERSIST` command checks the RAM serializer only and does not mount the card. `SDPROBE` on the test image does.
 
 ## Resource telemetry
 
@@ -79,7 +79,6 @@ Host-row control ids are 200 through 205. Previous, Next, and Back keep their ow
 ## Still deferred
 
 - ICMP, TCP, UDP, mDNS service browse, SSDP, and NetBIOS
-- SD card mount, until an authoritative T-Display-S3-Pro SD pin and bus contract is known
 - JSON inventory export
 - Wi-Fi or USB Remote transport and the proprietary Remote application
 - T-Display-S3-Pro pins that this firmware does not use
