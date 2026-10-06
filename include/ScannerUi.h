@@ -52,6 +52,7 @@ class ScannerUi {
   void fillSnapshot(UiSnapshot& snapshot) const;
   void rebuildHostView() const;
   void logServiceView() const;
+  void logNavigation() const;
   UiPaintFrame makeFrame(const UiSnapshot& snapshot, const UiControl* controls, int count) const;
   void paintMasked(uint32_t mask, const UiSnapshot& snapshot, const UiControl* controls, int count, int shownId);
   void servicePaint();

@@ -415,6 +415,85 @@ void ScannerUi::logServiceView() const {
   reportResource("after-view");
 }
 
+void ScannerUi::logNavigation() const {
+  if (scanner_ == nullptr || !showingHosts_) {
+    return;
+  }
+  rebuildHostView();
+  if (detailIndex_ < 0) {
+    char first[16] = "none";
+    const int slot = page_ * 6;
+    if (slot >= 0 && slot < viewCount_) {
+      const ObservedHost* host = scanner_->hostAt(viewOrder_[slot]);
+      if (host != nullptr) {
+        formatIpv4(host->ip, first, sizeof(first));
+      }
+    }
+    int visible = viewCount_ - page_ * 6;
+    if (visible < 0) {
+      visible = 0;
+    }
+    if (visible > 6) {
+      visible = 6;
+    }
+    Serial.printf("WLS nav mode=list filter=%s listPage=%d detailPage=%d first=%s rows=%d\n",
+                  openOnly_ ? "open" : "all", page_, detailPage_, first, visible);
+    return;
+  }
+  const ObservedHost* host = scanner_->hostAt(static_cast<uint16_t>(detailIndex_));
+  char ip[16] = "none";
+  if (host != nullptr) {
+    formatIpv4(host->ip, ip, sizeof(ip));
+  }
+  const ServiceScan* services = scanner_->serviceScan();
+  const ServiceProfile labelProfile =
+      services != nullptr && services->run() != ServiceRun::Idle ? services->profile() : profile_;
+  const ServiceHostResult* result =
+      services != nullptr ? services->resultAt(static_cast<uint16_t>(detailIndex_)) : nullptr;
+  int tested = result != nullptr ? result->tested : 0;
+  if (tested > kServicePortCap) {
+    tested = kServicePortCap;
+  }
+  if (tested <= 0) {
+    Serial.printf("WLS nav mode=detail ip=%s listPage=%d detailPage=%d rows=0 text=Not scanned\n", ip, page_,
+                  detailPage_);
+    return;
+  }
+  int page = detailPage_;
+  if (page < 0) {
+    page = 0;
+  }
+  if (page * 6 >= tested) {
+    page = (tested - 1) / 6;
+  }
+  char text[180];
+  text[0] = '\0';
+  size_t used = 0;
+  int rows = 0;
+  for (int row = 0; row < 6; ++row) {
+    const int index = page * 6 + row;
+    if (result == nullptr || index >= tested) {
+      break;
+    }
+    char label[16];
+    const char* family = serviceProfilePortFamily(labelProfile, static_cast<uint8_t>(index));
+    if (!formatServicePortLabel(label, sizeof(label), serviceProfilePort(labelProfile, static_cast<uint8_t>(index)),
+                                family)) {
+      continue;
+    }
+    char piece[40];
+    const int wrote = snprintf(piece, sizeof(piece), "%s%s=%s", rows == 0 ? "" : "|", label,
+                               serviceStateWord(result->state[index]));
+    if (wrote < 0 || static_cast<size_t>(wrote) >= sizeof(piece) || used + static_cast<size_t>(wrote) + 1 >= sizeof(text)) {
+      break;
+    }
+    memcpy(text + used, piece, static_cast<size_t>(wrote) + 1);
+    used += static_cast<size_t>(wrote);
+    ++rows;
+  }
+  Serial.printf("WLS nav mode=detail ip=%s listPage=%d detailPage=%d rows=%d text=%s\n", ip, page_, page, rows, text);
+}
+
 void ScannerUi::fillSnapshot(UiSnapshot& snapshot) const {
   snapshot = UiSnapshot();
   const WifiPhase phase = wifi_->phase();
@@ -987,6 +1066,9 @@ bool ScannerUi::executeRemote(AppAction action, int rowOffset, const char* text)
   }
   const bool wasHosts = showingHosts_;
   const bool wasOpen = openOnly_;
+  const int wasPage = page_;
+  const int wasDetail = detailIndex_;
+  const int wasDetailPage = detailPage_;
   AppHooks hooks;
   hooks.findNetworks = hookFind;
   hooks.forgetNetwork = hookForget;
@@ -1019,6 +1101,11 @@ bool ScannerUi::executeRemote(AppAction action, int rowOffset, const char* text)
   }
   if (ok && showingHosts_ && (!wasHosts || openOnly_ != wasOpen || action == AppAction::ResetScan)) {
     logServiceView();
+  }
+  if (ok && showingHosts_ &&
+      (!wasHosts || openOnly_ != wasOpen || page_ != wasPage || detailIndex_ != wasDetail ||
+       detailPage_ != wasDetailPage)) {
+    logNavigation();
   }
   return ok;
 }
