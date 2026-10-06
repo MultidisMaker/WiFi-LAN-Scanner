@@ -36,6 +36,8 @@ enum UiControlId : int {
   IdCount256,
   IdWindowPrev,
   IdWindowNext,
+  IdAllHosts,
+  IdOpenOnly,
   IdKeyBase = 100,
   // Rows used to sit in the sequential list, which made IdRow0 + 1 equal IdPrev.
   // Previous, Next, and Back then never ran. Keep rows in their own range.
@@ -92,6 +94,13 @@ struct UiSnapshot {
   char rowDetail[6][40] = {};
   char rowVendor[6][32] = {};
   char rowNote[6][22] = {};
+  bool openOnly = false;
+  bool hostDetail = false;
+  int detailPage = 0;
+  int visibleCount = 0;
+  char detailTitle[16] = {};
+  char detailName[22] = {};
+  char emptyNote[32] = {};
 };
 
 struct UiGesture {

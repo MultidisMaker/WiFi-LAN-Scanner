@@ -287,6 +287,8 @@ const NamedAction kActions[] = {
     {"count256", AppAction::SetLimit, false, 256},
     {"windownext", AppAction::WindowNext, false, -1},
     {"windowprev", AppAction::WindowPrev, false, -1},
+    {"allhosts", AppAction::SetFilterAll, false, -1},
+    {"openonly", AppAction::SetFilterOpen, false, -1},
     {"basic", AppAction::SetProfile, false, 0},   {"common", AppAction::SetProfile, false, 1},
     {"detailed", AppAction::SetProfile, false, 2},
     {"back", AppAction::Back, false, -1},         {"next", AppAction::NextPage, false, -1},
@@ -357,7 +359,7 @@ int writeState(char* out, int outCap, const AppState& state) {
   addRaw(buf, "\",\"elapsed\":");
   addInt(buf, static_cast<int>(state.elapsedMs));
   addRaw(buf, ",\"hosts\":");
-  addInt(buf, state.hostsOpen ? 1 : 0);
+  addInt(buf, !state.hostsOpen ? 0 : (state.openOnly ? 2 : 1));
   addRaw(buf, ",\"page\":");
   addInt(buf, state.page);
   addRaw(buf, ",\"canStart\":");

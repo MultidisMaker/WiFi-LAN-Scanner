@@ -24,6 +24,8 @@ A completed handshake is Open (`o`). An active reject is Closed (`c`): on this E
 
 The connect runs only after the scanner is Complete and PTR/OUI enrichment is idle. It does not return the scanner to Scanning, because that state is what starts discovery and clears the PTR cycle.
 
+The panel uses the words Open, Closed, Timeout, and Error. A host card summarizes open ports as `Open: 22 SSH` and adds another name only when the whole token fits in the existing note. Untested inventory is `Not scanned`. A tested host with no open port is `Open: none`. Timeout is not shown as closed. CSV and `SERVICE_ROW` keep the letters `o`, `c`, `t`, and `e` for the same facts. The on-device list can show only hosts with an open port and is ordered by IP. That filter does not remove, reorder, or rewrite the inventory, the CSV, or the Remote rows.
+
 ## Port families
 
 These are the ordered TCP lists. Basic is the first three, Common is the first nine, and Detailed is all twenty. The family name is an inventory label, not a vulnerability check.

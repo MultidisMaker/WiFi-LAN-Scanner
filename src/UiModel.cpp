@@ -132,6 +132,10 @@ const char* uiControlName(int id) {
       return "windowprev";
     case IdWindowNext:
       return "windownext";
+    case IdAllHosts:
+      return "allhosts";
+    case IdOpenOnly:
+      return "openonly";
     default:
       if (id >= IdRow0 && id < IdRow0 + 6) {
         return "row";
@@ -160,16 +164,25 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
   }
 
   if (snapshot.phase == UiPhase::Hosts) {
+    // Detail rows sit fully inside one dirty band. The host list keeps the card grid.
+    static const int kDetailY[6] = {72, 108, 150, 186, 244, 288};
+    static const int kDetailH[6] = {32, 32, 32, 32, 32, 30};
     for (int row = 0; row < 6; ++row) {
       if (!snapshot.rowPresent[row]) {
         continue;
       }
       const int before = count;
-      count = appendControl(out, count, cap, IdRow0 + row, 6, 40 + row * 52, 210, 48, snapshot.rowLabel[row],
-                            snapshot.rowDetail[row], 0, false, snapshot.rowVendor[row]);
-      if (count > before) {
+      const int y = snapshot.hostDetail ? kDetailY[row] : 40 + row * 52;
+      const int h = snapshot.hostDetail ? kDetailH[row] : 48;
+      count = appendControl(out, count, cap, IdRow0 + row, 6, y, 210, h, snapshot.rowLabel[row],
+                            snapshot.rowDetail[row], 0, false, snapshot.hostDetail ? nullptr : snapshot.rowVendor[row]);
+      if (count > before && !snapshot.hostDetail) {
         copyLabel(out[count - 1].note, sizeof(out[count - 1].note), snapshot.rowNote[row]);
       }
+    }
+    if (!snapshot.hostDetail) {
+      count = appendControl(out, count, cap, snapshot.openOnly ? IdAllHosts : IdOpenOnly, 130, 6, 84, 26,
+                            snapshot.openOnly ? "All hosts" : "Open only", nullptr, 0, false, nullptr, true);
     }
     count = appendControl(out, count, cap, IdPrev, 6, 360, 64, 40, "Prev", nullptr, 0, false);
     count = appendControl(out, count, cap, IdNext, 76, 360, 64, 40, "Next", nullptr, 0, false);

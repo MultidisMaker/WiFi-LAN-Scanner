@@ -71,6 +71,10 @@ int expectedControl(AppAction action, int rowOffset) {
       return IdWindowPrev;
     case AppAction::WindowNext:
       return IdWindowNext;
+    case AppAction::SetFilterAll:
+      return IdAllHosts;
+    case AppAction::SetFilterOpen:
+      return IdOpenOnly;
     case AppAction::Back:
       return IdBack;
     case AppAction::NextPage:
@@ -149,6 +153,10 @@ const char* actionToken(AppAction action) {
       return "windowprev";
     case AppAction::WindowNext:
       return "windownext";
+    case AppAction::SetFilterAll:
+      return "allhosts";
+    case AppAction::SetFilterOpen:
+      return "openonly";
     case AppAction::Back:
       return "back";
     case AppAction::NextPage:

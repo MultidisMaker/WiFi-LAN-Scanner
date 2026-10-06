@@ -17,7 +17,10 @@
 #include "NetMath.h"
 #include "NetworkRange.h"
 #include "Oui.h"
+#include "ResourceMeter.h"
 #include "ServiceProfileStore.h"
+#include "ServiceResultView.h"
+#include "ServiceScan.h"
 #include "TouchBoard.h"
 #include "UiModel.h"
 #include "UiRender.h"
@@ -273,7 +276,19 @@ void paintControl(const Clip& clip, const UiControl& control, bool pressed) {
   }
   textClip(clip, textX, textY, size, ink, control.label);
   if (control.detail[0] != '\0') {
-    textClip(clip, control.x + 6, detailY, 1, ink, control.detail);
+    uint16_t detailInk = ink;
+    if (face == ControlFace::Normal || face == ControlFace::Latched) {
+      if (strcmp(control.detail, "OPEN") == 0) {
+        detailInk = GREEN;
+      } else if (strcmp(control.detail, "CLOSED") == 0) {
+        detailInk = DARKGREY;
+      } else if (strcmp(control.detail, "TIMEOUT") == 0) {
+        detailInk = ORANGE;
+      } else if (strcmp(control.detail, "ERROR") == 0) {
+        detailInk = RED;
+      }
+    }
+    textClip(clip, control.x + 6, detailY, 1, detailInk, control.detail);
   }
   if (control.vendor[0] != '\0' && control.h >= 44 && control.id != IdProgress) {
     textClip(clip, control.x + 6, vendorY, 1, ink, control.vendor);
@@ -332,6 +347,74 @@ void ScannerUi::begin(WifiService& wifi, ScannerController& scanner) {
                 static_cast<unsigned>(kUiSpriteW * kUiSpriteH * 2), kUiSpriteW, kUiSpriteH);
 }
 
+void ScannerUi::rebuildHostView() const {
+  viewCount_ = 0;
+  detailCount_ = 0;
+  if (scanner_ == nullptr) {
+    return;
+  }
+  const uint16_t observed = scanner_->observedCount();
+  const int hostCount = observed > HostInventory::kCap ? static_cast<int>(HostInventory::kCap) : static_cast<int>(observed);
+  for (int i = 0; i < hostCount; ++i) {
+    const ObservedHost* host = scanner_->hostAt(static_cast<uint16_t>(i));
+    viewIps_[i] = host != nullptr ? host->ip : Ipv4();
+  }
+  struct Lookup {
+    const ServiceScan* scan;
+  } lookup{scanner_->serviceScan()};
+  auto at = [](void* context, uint16_t index) -> const ServiceHostResult* {
+    auto* held = static_cast<Lookup*>(context);
+    if (held == nullptr || held->scan == nullptr) {
+      return nullptr;
+    }
+    return held->scan->resultAt(index);
+  };
+  viewCount_ = buildServiceHostView(viewOrder_, static_cast<int>(HostInventory::kCap), hostCount, viewIps_, at, &lookup,
+                                    openOnly_);
+  if (detailIndex_ >= 0) {
+    const ServiceScan* services = scanner_->serviceScan();
+    const ServiceHostResult* result =
+        services != nullptr ? services->resultAt(static_cast<uint16_t>(detailIndex_)) : nullptr;
+    detailCount_ = result != nullptr ? result->tested : 0;
+  }
+}
+
+void ScannerUi::logServiceView() const {
+  if (scanner_ == nullptr) {
+    return;
+  }
+  rebuildHostView();
+  const ServiceScan* services = scanner_->serviceScan();
+  const ServiceProfile labelProfile =
+      services != nullptr && services->run() != ServiceRun::Idle ? services->profile() : profile_;
+  Serial.printf("WLS view filter=%s shown=%d observed=%u openHosts=%u\n", openOnly_ ? "open" : "all", viewCount_,
+                static_cast<unsigned>(scanner_->observedCount()),
+                static_cast<unsigned>(services != nullptr ? services->openHosts() : 0));
+  const int limit = viewCount_ < 32 ? viewCount_ : 32;
+  for (int i = 0; i < limit; ++i) {
+    const uint16_t index = viewOrder_[i];
+    const ObservedHost* host = scanner_->hostAt(index);
+    if (host == nullptr) {
+      continue;
+    }
+    char ip[16];
+    char summary[22];
+    char csv[160];
+    formatIpv4(host->ip, ip, sizeof(ip));
+    const ServiceHostResult* result = services != nullptr ? services->resultAt(index) : nullptr;
+    if (!formatServiceSummary(summary, sizeof(summary), labelProfile, result)) {
+      summary[0] = '\0';
+    }
+    if (!formatServiceField(csv, sizeof(csv), labelProfile, result)) {
+      csv[0] = '\0';
+    }
+    Serial.printf("WLS host ip=%s tested=%u open=%u summary=%s csv=%s\n", ip,
+                  static_cast<unsigned>(result != nullptr ? result->tested : 0),
+                  static_cast<unsigned>(result != nullptr ? result->openCount : 0), summary, csv);
+  }
+  reportResource("after-view");
+}
+
 void ScannerUi::fillSnapshot(UiSnapshot& snapshot) const {
   snapshot = UiSnapshot();
   const WifiPhase phase = wifi_->phase();
@@ -388,22 +471,86 @@ void ScannerUi::fillSnapshot(UiSnapshot& snapshot) const {
                static_cast<long>(ap->rssi));
     }
   } else if (snapshot.phase == UiPhase::Hosts) {
-    const int start = page_ * 6;
-    for (int row = 0; row < 6; ++row) {
-      const ObservedHost* host = scanner_->hostAt(static_cast<uint16_t>(start + row));
-      if (host == nullptr) {
-        continue;
+    rebuildHostView();
+    const ServiceProfile labelProfile =
+        services != nullptr && services->run() != ServiceRun::Idle ? services->profile() : profile_;
+    snapshot.openOnly = openOnly_;
+    snapshot.visibleCount = viewCount_;
+    snapshot.hostDetail = false;
+    if (detailIndex_ >= 0 && scanner_->hostAt(static_cast<uint16_t>(detailIndex_)) == nullptr) {
+      detailIndex_ = -1;
+      detailPage_ = 0;
+      detailCount_ = 0;
+    }
+    if (detailIndex_ >= 0) {
+      snapshot.hostDetail = true;
+      snapshot.detailPage = detailPage_;
+      const ObservedHost* host = scanner_->hostAt(static_cast<uint16_t>(detailIndex_));
+      if (host != nullptr) {
+        formatIpv4(host->ip, snapshot.detailTitle, sizeof(snapshot.detailTitle));
+        copyLabel(snapshot.detailName, sizeof(snapshot.detailName), host->name[0] != '\0' ? host->name : "No name");
       }
-      snapshot.rowPresent[row] = true;
-      formatIpv4(host->ip, snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]));
-      formatHostDetail(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), host->nameSource, host->name,
-                       host->hasMac, host->mac);
-      formatOuiLine(snapshot.rowVendor[row], sizeof(snapshot.rowVendor[row]), host->ouiState, host->manufacturer);
-      if (services != nullptr && (services->run() == ServiceRun::Complete || services->run() == ServiceRun::Stopped)) {
-        const ServiceHostResult* result = services->resultAt(static_cast<uint16_t>(start + row));
-        if (result != nullptr && result->tested > 0) {
-          snprintf(snapshot.rowNote[row], sizeof(snapshot.rowNote[row]), "open %u", result->openCount);
+      const ServiceHostResult* result =
+          services != nullptr ? services->resultAt(static_cast<uint16_t>(detailIndex_)) : nullptr;
+      int tested = result != nullptr ? result->tested : 0;
+      if (tested > kServicePortCap) {
+        tested = kServicePortCap;
+      }
+      detailCount_ = tested;
+      if (tested <= 0) {
+        copyLabel(snapshot.emptyNote, sizeof(snapshot.emptyNote), "Not scanned");
+      } else {
+        if (detailPage_ < 0) {
+          detailPage_ = 0;
         }
+        if (detailPage_ * 6 >= tested) {
+          detailPage_ = (tested - 1) / 6;
+        }
+        snapshot.detailPage = detailPage_;
+        const int start = detailPage_ * 6;
+        for (int row = 0; row < 6; ++row) {
+          const int index = start + row;
+          if (result == nullptr || index >= tested || index >= kServicePortCap) {
+            continue;
+          }
+          snapshot.rowPresent[row] = true;
+          const uint16_t port = serviceProfilePort(labelProfile, static_cast<uint8_t>(index));
+          const char* family = serviceProfilePortFamily(labelProfile, static_cast<uint8_t>(index));
+          formatServicePortLabel(snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]), port, family);
+          copyLabel(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]),
+                    serviceStateWord(result->state[index]));
+        }
+      }
+    } else {
+      if (viewCount_ > 0) {
+        if (page_ < 0) {
+          page_ = 0;
+        }
+        if (page_ * 6 >= viewCount_) {
+          page_ = (viewCount_ - 1) / 6;
+        }
+      }
+      if (viewCount_ == 0) {
+        copyLabel(snapshot.emptyNote, sizeof(snapshot.emptyNote),
+                  openOnly_ && scanner_->observedCount() > 0 ? "No open ports" : "No hosts yet");
+      }
+      const int start = page_ * 6;
+      for (int row = 0; row < 6; ++row) {
+        if (start + row >= viewCount_) {
+          continue;
+        }
+        const uint16_t index = viewOrder_[start + row];
+        const ObservedHost* host = scanner_->hostAt(index);
+        if (host == nullptr) {
+          continue;
+        }
+        snapshot.rowPresent[row] = true;
+        formatIpv4(host->ip, snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]));
+        formatHostDetail(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), host->nameSource, host->name,
+                         host->hasMac, host->mac);
+        formatOuiLine(snapshot.rowVendor[row], sizeof(snapshot.rowVendor[row]), host->ouiState, host->manufacturer);
+        const ServiceHostResult* result = services != nullptr ? services->resultAt(index) : nullptr;
+        formatServiceSummary(snapshot.rowNote[row], sizeof(snapshot.rowNote[row]), labelProfile, result);
       }
     }
   } else if (snapshot.phase == UiPhase::Home) {
@@ -428,7 +575,7 @@ void ScannerUi::fillSnapshot(UiSnapshot& snapshot) const {
       if (services->running() || services->paused() || services->run() == ServiceRun::Complete ||
           services->run() == ServiceRun::Stopped) {
         formatServiceProgressDetail(snapshot.progressDetail, sizeof(snapshot.progressDetail),
-                                    serviceProfileToken(services->profile()), services->openPorts());
+                                    serviceProfileToken(services->profile()), services->openHosts());
       }
     } else if (services != nullptr && scanner_->state() == ScanState::Complete) {
       snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "Naming");
@@ -470,7 +617,13 @@ UiPaintFrame ScannerUi::makeFrame(const UiSnapshot& snapshot, const UiControl* c
   frame.candidates = scanner_->candidateCount();
   frame.observed = scanner_->observedCount();
   frame.elapsedSec = scanner_->elapsedMs() / 1000UL;
-  frame.page = snapshot.phase == UiPhase::Settings ? static_cast<int>(snapshot.settingsPage) : page_;
+  if (snapshot.phase == UiPhase::Settings) {
+    frame.page = static_cast<int>(snapshot.settingsPage);
+  } else if (snapshot.hostDetail) {
+    frame.page = snapshot.detailPage;
+  } else {
+    frame.page = page_;
+  }
   frame.keyboardPage = keyboardPage_;
   frame.shift = wifi_->shiftOn();
   frame.passLen = wifi_->passwordLength();
@@ -492,6 +645,10 @@ UiPaintFrame ScannerUi::makeFrame(const UiSnapshot& snapshot, const UiControl* c
     stamp = mixText(stamp, snapshot.rowVendor[row]);
     stamp = mixText(stamp, snapshot.rowNote[row]);
   }
+  stamp = mixText(stamp, snapshot.openOnly ? "open" : "all");
+  stamp = mixText(stamp, snapshot.hostDetail ? "detail" : "list");
+  stamp = mixText(stamp, snapshot.detailTitle);
+  stamp = mixText(stamp, snapshot.emptyNote);
   if (snapshot.phase == UiPhase::Settings) {
     stamp = mixText(stamp, snapshot.rangeStart);
     stamp = mixText(stamp, snapshot.rangeEnd);
@@ -548,10 +705,21 @@ void ScannerUi::paintMasked(uint32_t mask, const UiSnapshot& snapshot, const UiC
     Clip clip{gfx, 0, oy, rect.x, rect.y, rect.x + rect.w, rect.y + rect.h};
     if (bit == UiRegionHeader) {
       if (snapshot.phase == UiPhase::Hosts) {
-        textClip(clip, 8, 8, 2, CYAN, "Hosts");
-        char line[40];
-        snprintf(line, sizeof(line), "Observed %u via ARP", scanner_->observedCount());
-        textClip(clip, 8, 32, 1, WHITE, line);
+        if (snapshot.hostDetail) {
+          textClip(clip, 8, 8, 2, CYAN, snapshot.detailTitle[0] != '\0' ? snapshot.detailTitle : "Host");
+          textClip(clip, 8, 32, 1, WHITE, snapshot.detailName);
+          textClip(clip, 8, 48, 1, DARKGREY, "OPEN CLOSED TIMEOUT ERROR");
+        } else {
+          textClip(clip, 8, 8, 2, CYAN, "Hosts");
+          char line[40];
+          if (snapshot.openOnly) {
+            snprintf(line, sizeof(line), "Open only %d/%u", snapshot.visibleCount,
+                     static_cast<unsigned>(scanner_->observedCount()));
+          } else {
+            snprintf(line, sizeof(line), "All hosts %u", static_cast<unsigned>(scanner_->observedCount()));
+          }
+          textClip(clip, 8, 32, 1, WHITE, line);
+        }
       } else if (snapshot.phase == UiPhase::Results) {
         textClip(clip, 8, 8, 2, CYAN, "Networks");
       } else if (snapshot.phase == UiPhase::Password) {
@@ -598,6 +766,8 @@ void ScannerUi::paintMasked(uint32_t mask, const UiSnapshot& snapshot, const UiC
       textClip(clip, 8, 160, 1, WHITE, snapshot.rangeStart);
       textClip(clip, 8, 176, 1, WHITE, snapshot.rangeEnd);
       textClip(clip, 8, 192, 1, GREEN, snapshot.rangeNote);
+    } else if (bit == UiRegionNetwork && snapshot.phase == UiPhase::Hosts && snapshot.emptyNote[0] != '\0') {
+      textClip(clip, 8, 160, 1, WHITE, snapshot.emptyNote);
     } else if (bit == UiRegionNetwork && snapshot.phase == UiPhase::Home) {
       char line[48];
       if (wifi_->phase() == WifiPhase::Connected) {
@@ -793,6 +963,9 @@ bool ScannerUi::executeRemote(AppAction action, int rowOffset, const char* text)
   view.showingSettings = showingSettings_;
   view.entryOpen = wifi_->phase() == WifiPhase::Password;
   view.resultsOpen = wifi_->phase() == WifiPhase::Results;
+  if (showingHosts_) {
+    rebuildHostView();
+  }
   view.page = page_;
   view.keyboardPage = keyboardPage_;
   view.resultCount = wifi_->resultCount();
@@ -800,6 +973,20 @@ bool ScannerUi::executeRemote(AppAction action, int rowOffset, const char* text)
   view.rowOffset = rowOffset;
   view.profile = profile_;
   view.settingsPage = settingsPage_;
+  view.openOnly = openOnly_;
+  view.detailIndex = detailIndex_;
+  view.detailPage = detailPage_;
+  view.visibleCount = viewCount_;
+  view.detailCount = detailCount_;
+  view.selectedInventory = -1;
+  if (action == AppAction::SelectRow && showingHosts_ && detailIndex_ < 0 && rowOffset >= 0 && rowOffset < 6) {
+    const int slot = page_ * 6 + rowOffset;
+    if (slot >= 0 && slot < viewCount_) {
+      view.selectedInventory = static_cast<int>(viewOrder_[slot]);
+    }
+  }
+  const bool wasHosts = showingHosts_;
+  const bool wasOpen = openOnly_;
   AppHooks hooks;
   hooks.findNetworks = hookFind;
   hooks.forgetNetwork = hookForget;
@@ -815,6 +1002,9 @@ bool ScannerUi::executeRemote(AppAction action, int rowOffset, const char* text)
   showingSettings_ = view.showingSettings;
   page_ = view.page;
   keyboardPage_ = view.keyboardPage;
+  openOnly_ = view.openOnly;
+  detailIndex_ = view.detailIndex;
+  detailPage_ = view.detailPage;
   if (view.settingsPage == SettingsPage::Edit && pageBefore != SettingsPage::Edit) {
     editText_[0] = '\0';
   }
@@ -826,6 +1016,9 @@ bool ScannerUi::executeRemote(AppAction action, int rowOffset, const char* text)
   if (ok && limitAfter != limitBefore && addressLimitOk(limitAfter)) {
     saveAddressRangeCount(limitAfter);
     Serial.printf("WLS range count=%u source=set\n", static_cast<unsigned>(limitAfter));
+  }
+  if (ok && showingHosts_ && (!wasHosts || openOnly_ != wasOpen || action == AppAction::ResetScan)) {
+    logServiceView();
   }
   return ok;
 }
@@ -944,6 +1137,9 @@ void ScannerUi::captureState(AppState& out) const {
   view.observedCount = scanner_->observedCount();
   view.profile = profile_;
   view.settingsPage = settingsPage_;
+  view.openOnly = openOnly_;
+  view.detailIndex = detailIndex_;
+  view.detailPage = detailPage_;
   AppWifiView wifi;
   wifi.phase = phaseToken(wifi_->phase());
   const char* ssid = wifi_->hasSavedNetwork() ? wifi_->savedSsid() : wifi_->selectedSsid();

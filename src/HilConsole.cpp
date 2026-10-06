@@ -19,6 +19,7 @@
 #include "NameRecord.h"
 #include "Oui.h"
 #include "OuiData.h"
+#include "ActionAck.h"
 #include "AppActions.h"
 #include "InventoryExport.h"
 #include "InventoryStore.h"
@@ -28,6 +29,7 @@
 #include "NetMath.h"
 #include "PasswordBuffer.h"
 #include "ScannerController.h"
+#include "ServiceResultView.h"
 #include "ServiceScan.h"
 #include "UiModel.h"
 #include "UiPress.h"
@@ -1225,6 +1227,122 @@ void hilServices() {
       targets, skipped, heapOk ? 1 : 0);
 }
 
+void hilUx() {
+  const uint32_t heapBefore = ESP.getFreeHeap();
+  ServiceHostResult rows[4];
+  rows[0].tested = 3;
+  rows[0].openCount = 2;
+  rows[0].state[0] = ServiceProbeClass::Open;
+  rows[0].state[1] = ServiceProbeClass::Open;
+  rows[0].state[2] = ServiceProbeClass::Closed;
+  rows[1].tested = 3;
+  rows[1].state[0] = ServiceProbeClass::Closed;
+  rows[1].state[1] = ServiceProbeClass::Closed;
+  rows[1].state[2] = ServiceProbeClass::Closed;
+  rows[2].tested = 0;
+  rows[3].tested = 3;
+  rows[3].state[0] = ServiceProbeClass::Timeout;
+  rows[3].state[1] = ServiceProbeClass::Error;
+  rows[3].state[2] = ServiceProbeClass::Closed;
+  const Ipv4 ips[4] = {ipv4(10, 0, 0, 30), ipv4(10, 0, 0, 2), ipv4(10, 0, 0, 10), ipv4(10, 0, 0, 5)};
+  const Ipv4 ipsBefore[4] = {ips[0], ips[1], ips[2], ips[3]};
+  auto at = [](void* context, uint16_t index) -> const ServiceHostResult* {
+    auto* held = static_cast<ServiceHostResult*>(context);
+    return held != nullptr && index < 4 ? &held[index] : nullptr;
+  };
+  char summary[22];
+  char csv[64];
+  const bool openOk = formatServiceSummary(summary, sizeof(summary), ServiceProfile::Basic, &rows[0]) &&
+                      strcmp(summary, "Open: 22 SSH, 80 HTTP") == 0 &&
+                      formatServiceField(csv, sizeof(csv), ServiceProfile::Basic, &rows[0]) &&
+                      strcmp(csv, "22:o|80:o|443:c") == 0;
+  const bool zeroOk = formatServiceSummary(summary, sizeof(summary), ServiceProfile::Basic, &rows[1]) &&
+                      strcmp(summary, "Open: none") == 0 &&
+                      formatServiceField(csv, sizeof(csv), ServiceProfile::Basic, &rows[1]) &&
+                      strcmp(csv, "22:c|80:c|443:c") == 0 && strstr(csv, ":o") == nullptr;
+  const bool untestedOk = formatServiceSummary(summary, sizeof(summary), ServiceProfile::Basic, &rows[2]) &&
+                          strcmp(summary, "Not scanned") == 0 &&
+                          formatServiceField(csv, sizeof(csv), ServiceProfile::Basic, &rows[2]) && csv[0] == '\0';
+  const bool timeoutOk = strcmp(serviceStateWord(ServiceProbeClass::Timeout), "TIMEOUT") == 0 &&
+                         strcmp(serviceStateWord(ServiceProbeClass::Timeout), "CLOSED") != 0 &&
+                         formatServiceField(csv, sizeof(csv), ServiceProfile::Basic, &rows[3]) &&
+                         strcmp(csv, "22:t|80:e|443:c") == 0 && strstr(csv, ":t") != nullptr;
+  const bool errorOk = strcmp(serviceStateWord(ServiceProbeClass::Error), "ERROR") == 0 && strstr(csv, ":e") != nullptr;
+  uint16_t order[4];
+  const int allCount = buildServiceHostView(order, 4, 4, ips, at, rows, false);
+  const bool orderOk = allCount == 4 && order[0] == 1 && order[1] == 3 && order[2] == 2 && order[3] == 0 &&
+                       ipv4Equal(ips[0], ipsBefore[0]) && ipv4Equal(ips[3], ipsBefore[3]);
+  const int openCount = buildServiceHostView(order, 4, 4, ips, at, rows, true);
+  const bool openOnlyOk = openCount == 1 && order[0] == 0;
+  ServiceHostResult closedRows[4];
+  for (int i = 0; i < 4; ++i) {
+    closedRows[i].tested = 3;
+    closedRows[i].state[0] = ServiceProbeClass::Closed;
+    closedRows[i].state[1] = ServiceProbeClass::Closed;
+    closedRows[i].state[2] = ServiceProbeClass::Closed;
+  }
+  const bool emptyOk = buildServiceHostView(order, 4, 4, ips, at, closedRows, true) == 0;
+  ServiceHostResult detailed;
+  detailed.tested = 20;
+  detailed.openCount = 1;
+  for (int i = 0; i < 20; ++i) {
+    detailed.state[i] = ServiceProbeClass::Closed;
+  }
+  detailed.state[0] = ServiceProbeClass::Open;
+  detailed.state[10] = ServiceProbeClass::Timeout;
+  detailed.state[19] = ServiceProbeClass::Error;
+  char label[22];
+  const bool detailOk =
+      formatServicePortLabel(label, sizeof(label), serviceProfilePort(ServiceProfile::Detailed, 0),
+                             serviceProfilePortFamily(ServiceProfile::Detailed, 0)) &&
+      strcmp(label, "22 SSH") == 0 && strcmp(serviceStateWord(detailed.state[0]), "OPEN") == 0 &&
+      formatServicePortLabel(label, sizeof(label), serviceProfilePort(ServiceProfile::Detailed, 10),
+                             serviceProfilePortFamily(ServiceProfile::Detailed, 10)) &&
+      strcmp(label, "23 TELNET") == 0 &&
+      formatServicePortLabel(label, sizeof(label), serviceProfilePort(ServiceProfile::Detailed, 19),
+                             serviceProfilePortFamily(ServiceProfile::Detailed, 19)) &&
+      strcmp(label, "8883 MQTTS") == 0 && (0 * 6 + 0) == 0 && (1 * 6 + 4) == 10 && (3 * 6 + 1) == 19;
+  UiSnapshot cards;
+  cards.phase = UiPhase::Hosts;
+  cards.rowPresent[0] = true;
+  cards.rowPresent[1] = true;
+  snprintf(cards.rowLabel[0], sizeof(cards.rowLabel[0]), "10.0.0.30");
+  snprintf(cards.rowLabel[1], sizeof(cards.rowLabel[1]), "10.0.0.2");
+  snprintf(cards.rowNote[0], sizeof(cards.rowNote[0]), "Open: 22 SSH");
+  snprintf(cards.rowNote[1], sizeof(cards.rowNote[1]), "Open: none");
+  int scratchCap = 0;
+  UiControl* controls = uiScratchControls(&scratchCap);
+  const int cardCount = collectUiControls(controls, scratchCap, cards);
+  bool bleedOk = false;
+  for (int i = 0; i < cardCount; ++i) {
+    if (strcmp(controls[i].label, "10.0.0.30") == 0) {
+      bleedOk = strcmp(controls[i].note, "Open: 22 SSH") == 0 && strstr(controls[i].note, "none") == nullptr;
+    }
+    if (strcmp(controls[i].label, "10.0.0.2") == 0 && strcmp(controls[i].note, "Open: none") != 0) {
+      bleedOk = false;
+    }
+  }
+  int row = -1;
+  AppView view;
+  view.showingHosts = true;
+  view.page = 2;
+  view.detailIndex = 1;
+  const bool names = actionFromControl(IdOpenOnly, &row) == AppAction::SetFilterOpen &&
+                     strcmp(actionToken(AppAction::SetFilterOpen), "openonly") == 0 &&
+                     strcmp(uiControlName(IdOpenOnly), "openonly") == 0 &&
+                     actionFromControl(IdAllHosts, &row) == AppAction::SetFilterAll &&
+                     strcmp(actionToken(AppAction::SetFilterAll), "allhosts") == 0;
+  applyAppAction(AppAction::SetFilterOpen, view, gHilScanner, nullptr);
+  const bool touched = names && view.openOnly && view.page == 0 && view.detailIndex < 0 && view.showingHosts;
+  const uint32_t heapAfter = ESP.getFreeHeap();
+  const bool heapOk = heapAfter + 256 >= heapBefore;
+  Serial.printf(
+      "WLS-HIL UX open=%d zero=%d untested=%d timeout=%d error=%d all=%d openonly=%d empty=%d detail=%d bleed=%d "
+      "order=%d\n",
+      openOk ? 1 : 0, zeroOk ? 1 : 0, untestedOk ? 1 : 0, timeoutOk ? 1 : 0, errorOk ? 1 : 0, orderOk ? 4 : 0,
+      openOnlyOk && touched ? 1 : 0, emptyOk ? 1 : 0, detailOk ? 1 : 0, bleedOk ? 1 : 0, orderOk && heapOk ? 1 : 0);
+}
+
 void hilDispatch(const char* line) {
   if (strncmp(line, "@R1 ", 4) == 0) {
     usbRemoteSubmitLine(line);
@@ -1252,6 +1370,8 @@ void hilDispatch(const char* line) {
     hilActions();
   } else if (strcmp(line, "SERVICES") == 0) {
     hilServices();
+  } else if (strcmp(line, "UX") == 0) {
+    hilUx();
   } else if (strcmp(line, "PERSIST") == 0) {
     hilPersist();
   } else if (strcmp(line, "LIVECLOSE") == 0) {

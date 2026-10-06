@@ -130,6 +130,10 @@ AppAction actionFromControl(int id, int* rowOffset) {
       return AppAction::WindowPrev;
     case IdWindowNext:
       return AppAction::WindowNext;
+    case IdAllHosts:
+      return AppAction::SetFilterAll;
+    case IdOpenOnly:
+      return AppAction::SetFilterOpen;
     case IdBack:
       return AppAction::Back;
     case IdNext:
@@ -166,9 +170,16 @@ bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
         call(wifi->forgetNetwork, wifi->context);
       }
       break;
-    case AppAction::StartScan:
+    case AppAction::StartScan: {
+      const ScanState before = scanner.state();
       scanner.start();
+      if (before != ScanState::Starting && scanner.state() == ScanState::Starting) {
+        view.page = 0;
+        view.detailIndex = -1;
+        view.detailPage = 0;
+      }
       break;
+    }
     case AppAction::PauseScan:
       scanner.pause();
       break;
@@ -180,13 +191,28 @@ bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
       break;
     case AppAction::ResetScan:
       view.page = 0;
+      view.openOnly = false;
+      view.detailIndex = -1;
+      view.detailPage = 0;
+      view.selectedInventory = -1;
       scanner.reset();
       break;
     case AppAction::OpenHosts:
       view.page = 0;
+      view.detailIndex = -1;
+      view.detailPage = 0;
       view.showingHosts = true;
       view.showingSettings = false;
       break;
+    case AppAction::SetFilterAll:
+    case AppAction::SetFilterOpen:
+      if (view.showingHosts && !view.showingSettings) {
+        view.openOnly = action == AppAction::SetFilterOpen;
+        view.detailIndex = -1;
+        view.detailPage = 0;
+        view.page = 0;
+      }
+      return true;
     case AppAction::OpenSettings:
       if (!view.resultsOpen && !view.entryOpen) {
         view.page = 0;
@@ -249,6 +275,11 @@ bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
       }
       return true;
     case AppAction::Back:
+      if (view.showingHosts && view.detailIndex >= 0) {
+        view.detailIndex = -1;
+        view.detailPage = 0;
+        return true;
+      }
       view.page = 0;
       if (view.showingSettings) {
         if (view.settingsPage == SettingsPage::Edit) {
@@ -269,8 +300,16 @@ bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
       }
       return true;
     case AppAction::NextPage:
-      if (view.showingHosts) {
-        if ((view.page + 1) * 6 < static_cast<int>(view.observedCount)) {
+      if (view.showingHosts && view.detailIndex >= 0) {
+        if ((view.detailPage + 1) * 6 < view.detailCount) {
+          ++view.detailPage;
+        }
+      } else if (view.showingHosts) {
+        int listSpan = static_cast<int>(view.observedCount);
+        if (view.openOnly || view.visibleCount > 0) {
+          listSpan = view.visibleCount;
+        }
+        if ((view.page + 1) * 6 < listSpan) {
           ++view.page;
         }
       } else if ((view.page + 1) * 6 < view.resultCount) {
@@ -278,7 +317,11 @@ bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
       }
       break;
     case AppAction::PrevPage:
-      if (view.page > 0) {
+      if (view.showingHosts && view.detailIndex >= 0) {
+        if (view.detailPage > 0) {
+          --view.detailPage;
+        }
+      } else if (view.page > 0) {
         --view.page;
       }
       break;
@@ -306,6 +349,14 @@ bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
       }
       return true;
     case AppAction::SelectRow:
+      if (view.showingHosts && !view.showingSettings) {
+        if (view.detailIndex < 0 && view.selectedInventory >= 0 &&
+            view.selectedInventory < static_cast<int>(HostInventory::kCap)) {
+          view.detailIndex = view.selectedInventory;
+          view.detailPage = 0;
+        }
+        return true;
+      }
       if (!view.showingHosts && !view.showingSettings && view.resultsOpen && view.rowOffset >= 0 && view.rowOffset < 6 &&
           wifi != nullptr && wifi->selectResult != nullptr) {
         wifi->selectResult(wifi->context, view.page * 6 + view.rowOffset);
@@ -369,6 +420,7 @@ void fillAppState(AppState& out, const AppView& view, const ScannerController& s
   }
   out.elapsedMs = scanner.elapsedMs();
   out.hostsOpen = view.showingHosts;
+  out.openOnly = view.showingHosts && view.openOnly;
   out.page = view.page;
   out.keyboardPage = view.keyboardPage;
   out.shift = wifi.shift;
@@ -411,8 +463,8 @@ int formatAppStateLine(char* out, int cap, const AppState& state) {
       "newest=%s elapsed=%lu hosts=%d page=%d keys=%d shift=%d canStart=%d canPause=%d canResume=%d",
       screenName(state.screen), state.wifiPhase, state.ssid, state.saved ? 1 : 0, state.scan, state.processed,
       state.candidates, state.observed, state.current, state.last, state.newest, static_cast<unsigned long>(state.elapsedMs),
-      state.hostsOpen ? 1 : 0, state.page, state.keyboardPage, state.shift ? 1 : 0, state.canStart ? 1 : 0,
-      state.canPause ? 1 : 0, state.canResume ? 1 : 0);
+      !state.hostsOpen ? 0 : (state.openOnly ? 2 : 1), state.page, state.keyboardPage, state.shift ? 1 : 0,
+      state.canStart ? 1 : 0, state.canPause ? 1 : 0, state.canResume ? 1 : 0);
   if (n < 0 || n >= cap) {
     out[0] = '\0';
     return -1;

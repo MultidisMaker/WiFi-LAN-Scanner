@@ -106,10 +106,10 @@ bool formatServiceProgressLabel(char* out, size_t cap, uint16_t done, uint16_t p
   return finish(out, cap, snprintf(out, cap, "Services %u/%u", done, planned));
 }
 
-bool formatServiceProgressDetail(char* out, size_t cap, const char* profileToken, uint16_t openPorts) {
+bool formatServiceProgressDetail(char* out, size_t cap, const char* profileToken, uint16_t openHosts) {
   if (out == nullptr || cap < 8) {
     return false;
   }
-  const char* token = profileToken != nullptr && profileToken[0] != '\0' ? profileToken : "common";
-  return finish(out, cap, snprintf(out, cap, "%s open %u", token, openPorts));
+  (void)profileToken;
+  return finish(out, cap, snprintf(out, cap, "Open hosts %u", static_cast<unsigned>(openHosts)));
 }

@@ -36,7 +36,9 @@ enum class AppAction : uint8_t {
   SetCustom,
   SetLimit,
   WindowNext,
-  WindowPrev
+  WindowPrev,
+  SetFilterAll,
+  SetFilterOpen
 };
 
 enum class AppScreen : uint8_t { Home, Results, Entry, Hosts, Settings };
@@ -53,6 +55,13 @@ struct AppView {
   uint16_t observedCount = 0;
   ServiceProfile profile = ServiceProfile::Common;
   SettingsPage settingsPage = SettingsPage::Menu;
+  // Display-only. Inventory order and Remote row indexes stay unchanged.
+  bool openOnly = false;
+  int detailIndex = -1;
+  int detailPage = 0;
+  int visibleCount = 0;
+  int detailCount = 0;
+  int selectedInventory = -1;
 };
 
 struct AppHooks {
@@ -91,6 +100,9 @@ struct AppState {
   char newest[16] = {};
   uint32_t elapsedMs = 0;
   bool hostsOpen = false;
+  // True only while the host screen is showing the open-port list.
+  // STATE reuses the hosts integer: 0 closed, 1 all hosts, 2 open only.
+  bool openOnly = false;
   int page = 0;
   int keyboardPage = 0;
   bool shift = false;

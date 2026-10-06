@@ -23,6 +23,7 @@
 #include "UiStatus.h"
 #include "ScannerController.h"
 #include "ServiceProfile.h"
+#include "ServiceResultView.h"
 #include "ServiceScan.h"
 #include "UiModel.h"
 #include "UiPress.h"
@@ -2782,6 +2783,319 @@ static void test_service_profiles_and_scan(void) {
   TEST_ASSERT_TRUE(strstr(diagnostic, "jobPhase") == nullptr);
 }
 
+static const ServiceHostResult* uxResultAt(void* context, uint16_t index) {
+  auto* rows = static_cast<ServiceHostResult*>(context);
+  if (rows == nullptr || index >= 4) {
+    return nullptr;
+  }
+  return &rows[index];
+}
+
+void test_service_result_ux(void) {
+  ServiceHostResult rows[4];
+  rows[0].tested = 3;
+  rows[0].openCount = 2;
+  rows[0].state[0] = ServiceProbeClass::Open;
+  rows[0].state[1] = ServiceProbeClass::Open;
+  rows[0].state[2] = ServiceProbeClass::Closed;
+  rows[1].tested = 3;
+  rows[1].state[0] = ServiceProbeClass::Closed;
+  rows[1].state[1] = ServiceProbeClass::Closed;
+  rows[1].state[2] = ServiceProbeClass::Closed;
+  rows[2].tested = 0;
+  rows[3].tested = 3;
+  rows[3].state[0] = ServiceProbeClass::Timeout;
+  rows[3].state[1] = ServiceProbeClass::Error;
+  rows[3].state[2] = ServiceProbeClass::Closed;
+  const Ipv4 ips[4] = {ipv4(10, 0, 0, 30), ipv4(10, 0, 0, 2), ipv4(10, 0, 0, 10), ipv4(10, 0, 0, 5)};
+  const Ipv4 saved[4] = {ips[0], ips[1], ips[2], ips[3]};
+
+  char summary[22];
+  char csv[64];
+  TEST_ASSERT_TRUE(formatServiceSummary(summary, sizeof(summary), ServiceProfile::Basic, &rows[0]));
+  TEST_ASSERT_EQUAL_STRING("Open: 22 SSH, 80 HTTP", summary);
+  TEST_ASSERT_TRUE(strlen(summary) < sizeof(summary));
+  TEST_ASSERT_TRUE(strstr(summary, "password") == nullptr);
+  TEST_ASSERT_TRUE(formatServiceField(csv, sizeof(csv), ServiceProfile::Basic, &rows[0]));
+  TEST_ASSERT_EQUAL_STRING("22:o|80:o|443:c", csv);
+  TEST_ASSERT_TRUE(formatServiceSummary(summary, sizeof(summary), ServiceProfile::Basic, &rows[1]));
+  TEST_ASSERT_EQUAL_STRING("Open: none", summary);
+  TEST_ASSERT_TRUE(formatServiceSummary(summary, sizeof(summary), ServiceProfile::Basic, &rows[2]));
+  TEST_ASSERT_EQUAL_STRING("Not scanned", summary);
+  TEST_ASSERT_TRUE(formatServiceSummary(summary, sizeof(summary), ServiceProfile::Basic, nullptr));
+  TEST_ASSERT_EQUAL_STRING("Not scanned", summary);
+  TEST_ASSERT_EQUAL_STRING("TIMEOUT", serviceStateWord(ServiceProbeClass::Timeout));
+  TEST_ASSERT_TRUE(strcmp(serviceStateWord(ServiceProbeClass::Timeout), "CLOSED") != 0);
+  TEST_ASSERT_EQUAL_STRING("ERROR", serviceStateWord(ServiceProbeClass::Error));
+  TEST_ASSERT_EQUAL_STRING("OPEN", serviceStateWord(ServiceProbeClass::Open));
+  TEST_ASSERT_EQUAL_STRING("CLOSED", serviceStateWord(ServiceProbeClass::Closed));
+  TEST_ASSERT_TRUE(serviceHostHasOpen(&rows[0]));
+  TEST_ASSERT_FALSE(serviceHostHasOpen(&rows[1]));
+  TEST_ASSERT_FALSE(serviceHostHasOpen(&rows[2]));
+  TEST_ASSERT_FALSE(serviceHostHasOpen(&rows[3]));
+
+  char tight[16];
+  TEST_ASSERT_TRUE(formatServiceSummary(tight, sizeof(tight), ServiceProfile::Basic, &rows[0]));
+  TEST_ASSERT_EQUAL_STRING("Open: 22 SSH +1", tight);
+  ServiceHostResult alt;
+  alt.tested = 9;
+  alt.openCount = 1;
+  alt.state[6] = ServiceProbeClass::Open;
+  TEST_ASSERT_TRUE(formatServiceSummary(summary, sizeof(summary), ServiceProfile::Common, &alt));
+  TEST_ASSERT_EQUAL_STRING("Open: 8080 HTTP-ALT", summary);
+
+  uint16_t order[4];
+  TEST_ASSERT_EQUAL_INT(4, buildServiceHostView(order, 4, 4, ips, uxResultAt, rows, false));
+  TEST_ASSERT_EQUAL_UINT16(1, order[0]);
+  TEST_ASSERT_EQUAL_UINT16(3, order[1]);
+  TEST_ASSERT_EQUAL_UINT16(2, order[2]);
+  TEST_ASSERT_EQUAL_UINT16(0, order[3]);
+  TEST_ASSERT_TRUE(ipv4Equal(ips[0], saved[0]) && ipv4Equal(ips[3], saved[3]));
+  TEST_ASSERT_EQUAL_INT(1, buildServiceHostView(order, 4, 4, ips, uxResultAt, rows, true));
+  TEST_ASSERT_EQUAL_UINT16(0, order[0]);
+  ServiceHostResult quiet[4];
+  for (int i = 0; i < 4; ++i) {
+    quiet[i].tested = 1;
+    quiet[i].state[0] = ServiceProbeClass::Closed;
+  }
+  TEST_ASSERT_EQUAL_INT(0, buildServiceHostView(order, 4, 4, ips, uxResultAt, quiet, true));
+  TEST_ASSERT_EQUAL_INT(4, buildServiceHostView(order, 4, 4, ips, uxResultAt, quiet, false));
+
+  char label[22];
+  TEST_ASSERT_TRUE(formatServicePortLabel(label, sizeof(label), serviceProfilePort(ServiceProfile::Detailed, 0),
+                                          serviceProfilePortFamily(ServiceProfile::Detailed, 0)));
+  TEST_ASSERT_EQUAL_STRING("22 SSH", label);
+  TEST_ASSERT_TRUE(formatServicePortLabel(label, sizeof(label), serviceProfilePort(ServiceProfile::Detailed, 10),
+                                          serviceProfilePortFamily(ServiceProfile::Detailed, 10)));
+  TEST_ASSERT_EQUAL_STRING("23 TELNET", label);
+  TEST_ASSERT_TRUE(formatServicePortLabel(label, sizeof(label), serviceProfilePort(ServiceProfile::Detailed, 19),
+                                          serviceProfilePortFamily(ServiceProfile::Detailed, 19)));
+  TEST_ASSERT_EQUAL_STRING("8883 MQTTS", label);
+  TEST_ASSERT_EQUAL_INT(0, 0 * 6 + 0);
+  TEST_ASSERT_EQUAL_INT(10, 1 * 6 + 4);
+  TEST_ASSERT_EQUAL_INT(19, 3 * 6 + 1);
+
+  UiSnapshot cards;
+  cards.phase = UiPhase::Hosts;
+  cards.rowPresent[0] = true;
+  cards.rowPresent[1] = true;
+  snprintf(cards.rowLabel[0], sizeof(cards.rowLabel[0]), "10.0.0.30");
+  snprintf(cards.rowLabel[1], sizeof(cards.rowLabel[1]), "10.0.0.2");
+  snprintf(cards.rowDetail[0], sizeof(cards.rowDetail[0]), "Name: printer 02:00:00:00:00:01");
+  snprintf(cards.rowDetail[1], sizeof(cards.rowDetail[1]), "Name: unknown MAC unknown");
+  snprintf(cards.rowNote[0], sizeof(cards.rowNote[0]), "Open: 22 SSH");
+  snprintf(cards.rowNote[1], sizeof(cards.rowNote[1]), "Open: none");
+  UiControl controls[16];
+  int count = collectUiControls(controls, 16, cards);
+  bool sawOpen = false;
+  bool sawNone = false;
+  bool sawFilter = false;
+  for (int i = 0; i < count; ++i) {
+    if (strcmp(controls[i].label, "10.0.0.30") == 0) {
+      sawOpen = true;
+      TEST_ASSERT_EQUAL_STRING("Open: 22 SSH", controls[i].note);
+      TEST_ASSERT_TRUE(strstr(controls[i].note, "none") == nullptr);
+      TEST_ASSERT_TRUE(strstr(controls[i].detail, "printer") != nullptr);
+      TEST_ASSERT_TRUE(controls[i].y == 40);
+    } else if (strcmp(controls[i].label, "10.0.0.2") == 0) {
+      sawNone = true;
+      TEST_ASSERT_EQUAL_STRING("Open: none", controls[i].note);
+      TEST_ASSERT_TRUE(strstr(controls[i].note, "22 SSH") == nullptr);
+    } else if (controls[i].id == IdOpenOnly) {
+      sawFilter = true;
+      TEST_ASSERT_EQUAL_STRING("Open only", controls[i].label);
+      TEST_ASSERT_TRUE(controls[i].x == 130 && controls[i].y == 6 && controls[i].w == 84 && controls[i].h == 26);
+    }
+  }
+  TEST_ASSERT_TRUE(sawOpen && sawNone && sawFilter);
+  cards.openOnly = true;
+  cards.hostDetail = true;
+  cards.rowPresent[1] = false;
+  snprintf(cards.rowLabel[0], sizeof(cards.rowLabel[0]), "22 SSH");
+  snprintf(cards.rowDetail[0], sizeof(cards.rowDetail[0]), "OPEN");
+  count = collectUiControls(controls, 16, cards);
+  bool sawDetail = false;
+  bool sawAll = false;
+  bool sawOpenButton = false;
+  for (int i = 0; i < count; ++i) {
+    if (controls[i].id == IdRow0) {
+      sawDetail = true;
+      TEST_ASSERT_EQUAL_STRING("22 SSH", controls[i].label);
+      TEST_ASSERT_EQUAL_STRING("OPEN", controls[i].detail);
+      TEST_ASSERT_TRUE(controls[i].y == 72);
+    }
+    if (controls[i].id == IdAllHosts) {
+      sawAll = true;
+    }
+    if (controls[i].id == IdOpenOnly) {
+      sawOpenButton = true;
+    }
+  }
+  TEST_ASSERT_TRUE(sawDetail && !sawAll && !sawOpenButton);
+
+  ScannerController scanner;
+  AppView view;
+  view.showingHosts = true;
+  view.page = 2;
+  view.detailIndex = 4;
+  view.detailPage = 1;
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::SetFilterOpen, view, scanner, nullptr));
+  TEST_ASSERT_TRUE(view.openOnly && view.page == 0 && view.detailIndex == -1 && view.showingHosts);
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::SetFilterAll, view, scanner, nullptr));
+  TEST_ASSERT_FALSE(view.openOnly);
+  view.openOnly = true;
+  view.page = 2;
+  view.detailIndex = 7;
+  view.detailCount = 20;
+  view.detailPage = 0;
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::NextPage, view, scanner, nullptr));
+  TEST_ASSERT_EQUAL_INT(1, view.detailPage);
+  TEST_ASSERT_EQUAL_INT(2, view.page);
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::NextPage, view, scanner, nullptr));
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::NextPage, view, scanner, nullptr));
+  TEST_ASSERT_EQUAL_INT(3, view.detailPage);
+  TEST_ASSERT_EQUAL_INT(2, view.page);
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::NextPage, view, scanner, nullptr));
+  TEST_ASSERT_EQUAL_INT(3, view.detailPage);
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::Back, view, scanner, nullptr));
+  TEST_ASSERT_TRUE(view.showingHosts && view.detailIndex == -1 && view.openOnly);
+  TEST_ASSERT_EQUAL_INT(2, view.page);
+  view.detailIndex = -1;
+  view.selectedInventory = 3;
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::SelectRow, view, scanner, nullptr));
+  TEST_ASSERT_EQUAL_INT(3, view.detailIndex);
+  const int kept = view.detailIndex;
+  view.selectedInventory = 1;
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::SelectRow, view, scanner, nullptr));
+  TEST_ASSERT_EQUAL_INT(kept, view.detailIndex);
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::ResetScan, view, scanner, nullptr));
+  TEST_ASSERT_FALSE(view.openOnly);
+  TEST_ASSERT_EQUAL_INT(-1, view.detailIndex);
+  TEST_ASSERT_EQUAL_INT(0, view.page);
+
+  AppView idleView;
+  idleView.openOnly = true;
+  idleView.page = 4;
+  idleView.detailIndex = 3;
+  ScannerController unarmed;
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::StartScan, idleView, unarmed, nullptr));
+  TEST_ASSERT_TRUE(idleView.openOnly && idleView.page == 4 && idleView.detailIndex == 3);
+  gScanNow = 8000;
+  FakeDiscoveryBackend backend;
+  armReady(scanner, backend, lan24(), 60000);
+  AppView started;
+  started.openOnly = true;
+  started.page = 4;
+  started.detailIndex = 3;
+  started.detailPage = 2;
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::StartScan, started, scanner, nullptr));
+  TEST_ASSERT_TRUE(scanner.state() == ScanState::Starting);
+  TEST_ASSERT_TRUE(started.openOnly);
+  TEST_ASSERT_EQUAL_INT(0, started.page);
+  TEST_ASSERT_EQUAL_INT(-1, started.detailIndex);
+
+  view = AppView();
+  view.showingHosts = false;
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::SetFilterOpen, view, scanner, nullptr));
+  TEST_ASSERT_FALSE(view.openOnly);
+  view.showingHosts = true;
+  view.observedCount = 13;
+  TEST_ASSERT_TRUE(applyAppAction(AppAction::NextPage, view, scanner, nullptr));
+  TEST_ASSERT_EQUAL_INT(1, view.page);
+
+  AppState state;
+  AppWifiView wifi;
+  wifi.phase = "connected";
+  wifi.ssid = "TFMiddle";
+  view.openOnly = true;
+  view.showingHosts = true;
+  fillAppState(state, view, scanner, wifi);
+  char line[240];
+  TEST_ASSERT_TRUE(formatAppStateLine(line, static_cast<int>(sizeof(line)), state) > 0);
+  TEST_ASSERT_TRUE(strstr(line, "hosts=2") != nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "password") == nullptr);
+  view.openOnly = false;
+  fillAppState(state, view, scanner, wifi);
+  TEST_ASSERT_TRUE(formatAppStateLine(line, static_cast<int>(sizeof(line)), state) > 0);
+  TEST_ASSERT_TRUE(strstr(line, "hosts=1") != nullptr);
+  view.showingHosts = false;
+  view.openOnly = true;
+  fillAppState(state, view, scanner, wifi);
+  TEST_ASSERT_TRUE(formatAppStateLine(line, static_cast<int>(sizeof(line)), state) > 0);
+  TEST_ASSERT_TRUE(strstr(line, "hosts=0") != nullptr);
+
+  RemoteWorld world;
+  world.scanner = &scanner;
+  world.view = &view;
+  view.showingHosts = true;
+  view.openOnly = true;
+  view.page = 1;
+  world.rowsCount = 2;
+  snprintf(world.rows[0].ip, sizeof(world.rows[0].ip), "10.0.0.30");
+  snprintf(world.rows[1].ip, sizeof(world.rows[1].ip), "10.0.0.2");
+  RemoteSession session;
+  requireHello(session, world);
+  char frame[640];
+  int n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"openonly\"}", frame,
+                      static_cast<int>(sizeof(frame)));
+  TEST_ASSERT_TRUE(n > 0);
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"openonly\",\"ok\":1}\n", frame);
+  TEST_ASSERT_TRUE(view.openOnly && view.page == 0);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_RESULTS\"}", frame, static_cast<int>(sizeof(frame)));
+  TEST_ASSERT_TRUE(strstr(frame, "10.0.0.30") != nullptr);
+  n = pullWorld(session, world, frame, static_cast<int>(sizeof(frame)));
+  TEST_ASSERT_TRUE(strstr(frame, "10.0.0.2") != nullptr);
+  n = pullWorld(session, world, frame, static_cast<int>(sizeof(frame)));
+  TEST_ASSERT_TRUE(strstr(frame, "\"op\":\"RESULT_END\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(frame, "\"count\":2") != nullptr);
+
+  world.haveState = true;
+  world.state.screen = AppScreen::Hosts;
+  snprintf(world.state.wifiPhase, sizeof(world.state.wifiPhase), "connecting");
+  memset(world.state.ssid, 'S', 32);
+  world.state.ssid[32] = '\0';
+  snprintf(world.state.scan, sizeof(world.state.scan), "SCANNING");
+  world.state.processed = 256;
+  world.state.candidates = 256;
+  world.state.observed = 256;
+  snprintf(world.state.current, sizeof(world.state.current), "255.255.255.255");
+  snprintf(world.state.last, sizeof(world.state.last), "255.255.255.255");
+  snprintf(world.state.newest, sizeof(world.state.newest), "255.255.255.255");
+  world.state.elapsedMs = 2147483647u;
+  world.state.hostsOpen = true;
+  world.state.openOnly = false;
+  world.state.page = 42;
+  world.state.canStart = true;
+  world.state.canPause = true;
+  world.state.canResume = true;
+  snprintf(world.state.profile, sizeof(world.state.profile), "detailed");
+  snprintf(world.state.rangeMode, sizeof(world.state.rangeMode), "automatic");
+  snprintf(world.state.rangeStart, sizeof(world.state.rangeStart), "255.255.255.255");
+  snprintf(world.state.rangeEnd, sizeof(world.state.rangeEnd), "255.255.255.255");
+  world.state.rangeLimit = 256;
+  snprintf(world.state.ack, sizeof(world.state.ack), "windownext");
+  snprintf(world.state.jobPhase, sizeof(world.state.jobPhase), "svc");
+  world.state.svcPlan = 5120;
+  world.state.svcDone = 5120;
+  world.state.svcOpenHosts = 256;
+  world.state.svcOpen = 5120;
+  RemoteSession stateSession;
+  n = submitWorld(stateSession, world, "@R1 {\"v\":1,\"op\":\"HELLO\"}", frame, static_cast<int>(sizeof(frame)));
+  TEST_ASSERT_TRUE(strstr(frame, "HELLO_ACK") != nullptr);
+  n = submitWorld(stateSession, world, "@R1 {\"v\":1,\"op\":\"GET_STATE\"}", frame, static_cast<int>(sizeof(frame)));
+  const int allFrame = n;
+  TEST_ASSERT_TRUE(strstr(frame, "\"hosts\":1") != nullptr);
+  TEST_ASSERT_TRUE(strstr(frame, "\"svc\":\"s/5120/5120/256/5120\"") != nullptr);
+  TEST_ASSERT_TRUE(n > 0 && n < 512);
+  world.state.openOnly = true;
+  n = submitWorld(stateSession, world, "@R1 {\"v\":1,\"op\":\"GET_STATE\"}", frame, static_cast<int>(sizeof(frame)));
+  TEST_ASSERT_TRUE(strstr(frame, "\"hosts\":2") != nullptr);
+  TEST_ASSERT_TRUE(strstr(frame, "\"svc\":\"s/5120/5120/256/5120\"") != nullptr);
+  TEST_ASSERT_EQUAL_INT(allFrame, n);
+  TEST_ASSERT_TRUE(n < 512);
+  TEST_ASSERT_TRUE(strstr(frame, "password") == nullptr);
+}
+
 static int gFailures = 0;
 
 void setup() {
@@ -2833,6 +3147,7 @@ void setup() {
   RUN_TEST(test_remote_action_busy_result);
   RUN_TEST(test_resource_line_injected);
   RUN_TEST(test_service_profiles_and_scan);
+  RUN_TEST(test_service_result_ux);
   gFailures = UNITY_END();
 }
 
