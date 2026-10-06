@@ -4,8 +4,10 @@
 #include <string.h>
 
 #include "InventoryExport.h"
+#include "NetMath.h"
 #include "RemoteProtocol.h"
 #include "ScannerUi.h"
+#include "ServiceScan.h"
 #include "TouchBoard.h"
 
 namespace {
@@ -63,6 +65,28 @@ bool remoteRow(void* context, int index, InventoryRow* out) {
   return true;
 }
 
+bool remoteService(void* context, int index, ServiceWireRow* out) {
+  (void)context;
+  if (out == nullptr || gScanner == nullptr || index < 0) {
+    return false;
+  }
+  const ObservedHost* host = gScanner->hostAt(static_cast<uint16_t>(index));
+  if (host == nullptr) {
+    return false;
+  }
+  *out = ServiceWireRow();
+  formatIpv4(host->ip, out->ip, sizeof(out->ip));
+  const ServiceScan* services = gScanner->serviceScan();
+  if (services != nullptr) {
+    const ServiceHostResult* result = services->resultAt(static_cast<uint16_t>(index));
+    formatServiceWirePorts(out->ports, sizeof(out->ports), services->profile(), result);
+    if (result != nullptr) {
+      out->openCount = result->openCount;
+    }
+  }
+  return true;
+}
+
 RemoteServices services() {
   RemoteServices value;
   value.apply = applyRemote;
@@ -70,6 +94,7 @@ RemoteServices services() {
   value.loadState = loadRemoteState;
   value.rowCount = remoteRows;
   value.rowAt = remoteRow;
+  value.serviceAt = remoteService;
   value.context = nullptr;
   return value;
 }

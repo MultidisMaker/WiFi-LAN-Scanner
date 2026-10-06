@@ -19,9 +19,18 @@ enum class RemoteLink : uint8_t { Disconnected = 0, ConnectedUsb = 1 };
 struct RemoteSession {
   RemoteLink link = RemoteLink::Disconnected;
   bool streaming = false;
+  // 0 is GET_RESULTS. 1 is GET_SERVICES. Existing zero-init stays on results.
+  uint8_t streamKind = 0;
   uint16_t rowCursor = 0;
   uint16_t rowCount = 0;
   uint16_t rejects = 0;
+};
+
+// One host's tested ports. ports uses port=o;port=c;port=t;port=e.
+struct ServiceWireRow {
+  char ip[16] = {};
+  char ports[160] = {};
+  uint16_t openCount = 0;
 };
 
 struct RemoteServices {
@@ -31,6 +40,7 @@ struct RemoteServices {
   void (*loadState)(void* context, AppState* out) = nullptr;
   int (*rowCount)(void* context) = nullptr;
   bool (*rowAt)(void* context, int index, InventoryRow* out) = nullptr;
+  bool (*serviceAt)(void* context, int index, ServiceWireRow* out) = nullptr;
   void* context = nullptr;
 };
 

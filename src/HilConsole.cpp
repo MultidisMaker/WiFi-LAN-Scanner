@@ -28,6 +28,7 @@
 #include "NetMath.h"
 #include "PasswordBuffer.h"
 #include "ScannerController.h"
+#include "ServiceScan.h"
 #include "UiModel.h"
 #include "UiPress.h"
 #include "UsbRemote.h"
@@ -548,7 +549,9 @@ void hilDiscover() {
   scanner.resume();
   const bool resumed = scanner.state() == ScanState::Scanning;
   scanner.stop();
-  delay(kScannerTransitionMs);
+  // A single 200 ms delay can return before the scanner clock reaches the
+  // transition. Match the ACTIONS trace, which waits past that boundary.
+  delay(kScannerTransitionMs + 40);
   scanner.loop();
   const bool stopKept = scanner.state() == ScanState::Complete && scanner.observedCount() == seenAtPause;
 
@@ -557,7 +560,7 @@ void hilDiscover() {
   scanner.setBackend(&backend);
   scanner.armConnectedFacts(facts);
   scanner.start();
-  delay(kScannerTransitionMs);
+  delay(kScannerTransitionMs + 40);
   scanner.loop();
   guard = 0;
   while (scanner.state() == ScanState::Scanning && guard < 48) {
@@ -1105,6 +1108,123 @@ void hilRange() {
   Serial.printf("WLS-HIL RANGE pass=%d\n", pass ? 1 : 0);
 }
 
+class HilServiceConnect : public ServiceConnectBackend {
+ public:
+  ServiceConnectStatus script[8] = {};
+  int scriptCount = 0;
+  int cursor = 0;
+  int starts = 0;
+  int cancels = 0;
+  bool pending = false;
+  ServiceConnectStatus held = ServiceConnectStatus::Pending;
+  uint16_t ports[8] = {};
+  uint8_t ips[8] = {};
+
+  void start(const Ipv4& ip, uint16_t port, uint32_t nowMs, uint32_t timeoutMs) override {
+    (void)nowMs;
+    (void)timeoutMs;
+    if (starts < 8) {
+      ports[starts] = port;
+      ips[starts] = ip.octet[3];
+    }
+    ++starts;
+    pending = true;
+    held = cursor < scriptCount ? script[cursor++] : ServiceConnectStatus::Error;
+  }
+
+  ServiceConnectStatus poll(uint32_t nowMs) override {
+    (void)nowMs;
+    if (!pending) {
+      return ServiceConnectStatus::Error;
+    }
+    if (held == ServiceConnectStatus::Pending) {
+      return ServiceConnectStatus::Pending;
+    }
+    pending = false;
+    return held;
+  }
+
+  void cancel() override {
+    ++cancels;
+    pending = false;
+    held = ServiceConnectStatus::Pending;
+  }
+};
+
+void hilServices() {
+  static ServiceScan scan;
+  static HilServiceConnect backend;
+  static HostInventory inventory;
+  backend = HilServiceConnect();
+  scan.reset();
+  scan.setBackend(&backend);
+  scan.setProfile(ServiceProfile::Basic);
+  inventory.clear();
+  const uint8_t macA[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+  const uint8_t macC[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
+  inventory.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, macA, false, 0, 1, "fake");
+  inventory.observe(ipv4(10, 0, 0, 2), EvidenceRank::Answered, false, nullptr, false, 0, 1, "fake");
+  inventory.observe(ipv4(10, 0, 0, 3), EvidenceRank::Neighbor, true, macC, false, 0, 1, "fake");
+  backend.script[0] = ServiceConnectStatus::Open;
+  backend.script[1] = ServiceConnectStatus::Closed;
+  backend.script[2] = ServiceConnectStatus::Timeout;
+  backend.script[3] = ServiceConnectStatus::Error;
+  backend.script[4] = ServiceConnectStatus::Open;
+  backend.script[5] = ServiceConnectStatus::Pending;
+  backend.scriptCount = 6;
+
+  const uint32_t heapBefore = ESP.getFreeHeap();
+  const bool armed = scan.arm(inventory, 0);
+  for (int step = 0; step < 5; ++step) {
+    scan.loop(static_cast<uint32_t>(step), inventory);
+  }
+  const uint16_t pausedDone = scan.completed();
+  const uint16_t pausedStarts = scan.startedCount();
+  scan.pause();
+  scan.loop(10, inventory);
+  const bool pauseOk = scan.paused() && scan.completed() == pausedDone && scan.startedCount() == pausedStarts &&
+                       pausedDone == 4 && pausedStarts == 5;
+  scan.resume();
+  scan.loop(11, inventory);
+  const bool resumeOk = scan.running() && scan.completed() == 5 && scan.startedCount() == 6;
+  scan.stop();
+  scan.loop(12, inventory);
+  scan.loop(13, inventory);
+  const bool stopOk = scan.run() == ServiceRun::Stopped && scan.completed() == 5 && scan.startedCount() == 6 &&
+                      scan.cancelledCount() == 1 && backend.cancels == 1;
+  const bool once = backend.starts == 6 && backend.ports[0] == 22 && backend.ports[1] == 80 && backend.ports[2] == 443 &&
+                    backend.ports[3] == 22 && backend.ports[4] == 80 && backend.ports[5] == 443 && backend.ips[0] == 1 &&
+                    backend.ips[3] == 3 && backend.ips[5] == 3;
+  const ServiceHostResult* hostA = scan.resultAt(0);
+  const ServiceHostResult* hostB = scan.resultAt(1);
+  const ServiceHostResult* hostC = scan.resultAt(2);
+  const bool classes = hostA != nullptr && hostA->tested == 3 && hostA->state[0] == ServiceProbeClass::Open &&
+                       hostA->state[1] == ServiceProbeClass::Closed && hostA->state[2] == ServiceProbeClass::Timeout &&
+                       hostB != nullptr && hostB->tested == 0 && hostC != nullptr && hostC->tested == 2 &&
+                       hostC->state[0] == ServiceProbeClass::Error && hostC->state[1] == ServiceProbeClass::Open;
+  const bool counts = armed && scan.planned() == 6 && scan.targetCount() == 2 && scan.openPorts() == 2 &&
+                      scan.closedCount() == 1 && scan.timeoutCount() == 1 && scan.errorCount() == 1 && scan.openHosts() == 2;
+  char field[64];
+  const bool fieldOk =
+      formatServiceField(field, sizeof(field), scan.profile(), hostA) && strcmp(field, "22:o|80:c|443:t") == 0;
+  const uint16_t planned = scan.planned();
+  const uint16_t done = scan.completed();
+  const uint16_t targets = scan.targetCount();
+  const unsigned skipped = inventory.count() > targets ? static_cast<unsigned>(inventory.count() - targets) : 0;
+  scan.reset();
+  const ServiceHostResult* cleared = scan.resultAt(0);
+  const bool resetOk = scan.run() == ServiceRun::Idle && scan.planned() == 0 && scan.completed() == 0 &&
+                       cleared != nullptr && cleared->tested == 0;
+  const uint32_t heapAfter = ESP.getFreeHeap();
+  const bool heapOk = heapAfter + 256 >= heapBefore;
+  Serial.printf(
+      "WLS-HIL SERVICES open=%d closed=%d timeout=%d error=%d once=%d pause=%d resume=%d stop=%d reset=%d planned=%u "
+      "done=%u targets=%u skipped=%u heap=%d\n",
+      counts && classes ? 2 : 0, counts && classes ? 1 : 0, counts && classes ? 1 : 0, counts && classes ? 1 : 0,
+      once && fieldOk ? 1 : 0, pauseOk ? 1 : 0, resumeOk ? 1 : 0, stopOk ? 1 : 0, resetOk ? 1 : 0, planned, done,
+      targets, skipped, heapOk ? 1 : 0);
+}
+
 void hilDispatch(const char* line) {
   if (strncmp(line, "@R1 ", 4) == 0) {
     usbRemoteSubmitLine(line);
@@ -1130,6 +1250,8 @@ void hilDispatch(const char* line) {
     hilResources();
   } else if (strcmp(line, "ACTIONS") == 0) {
     hilActions();
+  } else if (strcmp(line, "SERVICES") == 0) {
+    hilServices();
   } else if (strcmp(line, "PERSIST") == 0) {
     hilPersist();
   } else if (strcmp(line, "LIVECLOSE") == 0) {

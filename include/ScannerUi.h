@@ -13,6 +13,7 @@ class ScannerUi {
   void begin(WifiService& wifi, ScannerController& scanner);
   void loop();
   void captureState(AppState& out) const;
+  ServiceProfile profile() const { return profile_; }
   // Touch dispatch and USB Remote both end here. Remote cannot inject keystrokes.
   // text carries a custom start address. Null opens the on-device editor.
   bool applyRemote(AppAction action, int rowOffset, const char* text = nullptr);

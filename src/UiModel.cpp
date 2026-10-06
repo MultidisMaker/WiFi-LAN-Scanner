@@ -32,6 +32,7 @@ int appendControl(UiControl* out, int count, int cap, int id, int x, int y, int 
   copyLabel(control.label, sizeof(control.label), label);
   copyLabel(control.detail, sizeof(control.detail), detail);
   copyLabel(control.vendor, sizeof(control.vendor), vendor);
+  control.note[0] = '\0';
   control.value = value;
   control.latched = latched;
   control.secondary = secondary;
@@ -163,8 +164,12 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
       if (!snapshot.rowPresent[row]) {
         continue;
       }
+      const int before = count;
       count = appendControl(out, count, cap, IdRow0 + row, 6, 40 + row * 52, 210, 48, snapshot.rowLabel[row],
                             snapshot.rowDetail[row], 0, false, snapshot.rowVendor[row]);
+      if (count > before) {
+        copyLabel(out[count - 1].note, sizeof(out[count - 1].note), snapshot.rowNote[row]);
+      }
     }
     count = appendControl(out, count, cap, IdPrev, 6, 360, 64, 40, "Prev", nullptr, 0, false);
     count = appendControl(out, count, cap, IdNext, 76, 360, 64, 40, "Next", nullptr, 0, false);

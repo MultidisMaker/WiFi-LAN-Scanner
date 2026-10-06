@@ -4,6 +4,7 @@
 
 #include "ScannerController.h"
 #include "ServiceProfile.h"
+#include "ServiceScan.h"
 #include "UiModel.h"
 
 // Logical actions shared by the touchscreen and USB Remote protocol v1.
@@ -107,7 +108,17 @@ struct AppState {
   char rangeStart[16] = {};
   char rangeEnd[16] = {};
   uint16_t rangeLimit = 256;
+  // Job phase token: idle, disc, name, svc, done, stop. Not a credential.
+  // The 240-byte diagnostic line omits it, along with the service counters.
+  char jobPhase[8] = {};
+  uint16_t svcPlan = 0;
+  uint16_t svcDone = 0;
+  uint16_t svcOpenHosts = 0;
+  uint16_t svcOpen = 0;
 };
+
+// idle, disc, name, svc, done, or stop. A null scan treats finished discovery as done.
+const char* serviceJobPhase(ScanState state, const ServiceScan* scan);
 
 // Row ids 200..205 become SelectRow. Other known controls map to one action.
 // A null rowOffset is ignored. SelectRow writes the 0..5 offset there.
@@ -118,7 +129,7 @@ bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
                     const char* text = nullptr);
 
 void fillAppState(AppState& out, const AppView& view, const ScannerController& scanner, const AppWifiView& wifi,
-                  ServiceProfile profile = ServiceProfile::Common);
+                  ServiceProfile profile = ServiceProfile::Common, const ServiceScan* services = nullptr);
 
 // One diagnostic line. It has no passphrase field. Returns length, or -1.
 int formatAppStateLine(char* out, int cap, const AppState& state);

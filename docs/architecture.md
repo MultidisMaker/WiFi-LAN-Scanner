@@ -1,6 +1,6 @@
 # WiFi LAN Scanner architecture
 
-This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, offline manufacturer enrichment, schema-1 CSV persistence for hosts that discovery already found, and USB Remote protocol v1 on that same action seam. The scanner stores a Service Scan profile and can show it. TCP and UDP service probes are not implemented. Wi-Fi Remote transport remains deferred. See `docs/service-scan.md`.
+This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, offline manufacturer enrichment, schema-2 CSV persistence for hosts that discovery already found, a connect-only TCP Service Scan of those hosts, and USB Remote protocol v1 on that same action seam. Service Scan does not send UDP, banners, or credentials. Wi-Fi Remote transport remains deferred. See `docs/service-scan.md`.
 
 ## Hardware abstraction
 
@@ -62,7 +62,7 @@ Actionable controls share one geometry list (`collectUiControls` in `src/UiModel
 
 ## Inventory export
 
-`include/InventoryExport.h` writes schema-1 CSV for hosts the scan already observed. The directory is `/WiFi-LAN-Scanner/scans/`. A publish writes `path.tmp` and renames it to the final name. Unanswered addresses are omitted. Local, group, unknown, and unavailable manufacturer states stay explicit, and a label is stored only for a known global assignment. The CSV has no passphrase column. See `docs/persistence.md`.
+`include/InventoryExport.h` writes schema-2 CSV for hosts the scan already observed. The last column, `services`, lists tested TCP ports as `port:o`, `port:c`, `port:t`, or `port:e`. The directory is `/WiFi-LAN-Scanner/scans/`. A publish writes `path.tmp` and renames it to the final name. Unanswered addresses are omitted. Local, group, unknown, and unavailable manufacturer states stay explicit, and a label is stored only for a known global assignment. The CSV has no passphrase column. See `docs/persistence.md`.
 
 `storeInventoryOnSd` streams that CSV to `/WiFi-LAN-Scanner/scans/scan-########.csv` on the device. The host build has no card and still returns `contract-unproven`. A missing card stays `media-absent` and does not format the socket. The synthetic `PERSIST` command checks the RAM serializer only and does not mount the card. `SDPROBE` on the test image does. An older `/LANScanner/scans/` directory is left in place when it is present.
 

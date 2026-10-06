@@ -5,8 +5,9 @@
 
 #include "HostInventory.h"
 
-// Schema-1 CSV for positive observations only. Unanswered addresses are not rows.
-// The device streams these pieces to the SD card. It does not assemble the whole file in RAM.
+// Schema-2 CSV for positive observations only. Unanswered addresses are not rows.
+// Column 9 is the tested TCP ports. The device streams these pieces to the SD card.
+// It does not assemble the whole file in RAM.
 
 struct InventoryMeta {
   uint32_t sequence = 0;
@@ -26,6 +27,8 @@ struct InventoryRow {
   char macClass[16] = {};
   char ouiState[16] = {};
   char manufacturer[65] = {};
+  // port:o|port:c|port:t|port:e. Empty when this host was not tested.
+  char services[160] = {};
 };
 
 struct PublishSink {

@@ -2,13 +2,13 @@
 
 ## CSV
 
-Positive observations can be serialized as schema-1 CSV. The directory is `/WiFi-LAN-Scanner/scans/`, for example `/WiFi-LAN-Scanner/scans/scan-00000001.csv`. Metadata lines start with `#` and record schema, sequence, station, prefix, gateway, candidate count, and cap. The header is:
+Positive observations can be serialized as schema-2 CSV. The directory is `/WiFi-LAN-Scanner/scans/`, for example `/WiFi-LAN-Scanner/scans/scan-00000001.csv`. Metadata lines start with `#` and record schema, sequence, station, prefix, gateway, candidate count, and cap. The header is:
 
-`ip,mac,method,name,nameSource,macClass,ouiState,manufacturer`
+`ip,mac,method,name,nameSource,macClass,ouiState,manufacturer,services`
 
 A field that contains a comma, quote, or line break is wrapped in quotes, and an embedded quote is doubled. A missing MAC, name, or manufacturer is empty. Manufacturer text is written only when the OUI state is known. Local, group, unknown, unavailable, none, and unset stay in `macClass` or `ouiState` and are not replaced with a guessed vendor. Unanswered addresses are not rows. The publish helper writes `path.tmp` and renames it onto the final path so a partial write is not the finished file.
 
-The file has no Wi-Fi passphrase, vault material, or packet capture. The card file stays schema-1 CSV. USB Remote reads the same in-memory rows and does not reread this file.
+`services` is empty when that host was not tested. A tested host lists each attempted TCP port as `22:o`, `80:c`, `443:t`, or `445:e` (`open`, `closed`, `timeout`, `error`) separated by `|`. The letters are the connect result only. The file has no Wi-Fi passphrase, vault material, or packet capture. USB Remote `RESULT_ROW` keeps the original host columns. `GET_SERVICES` carries the port list. Neither rereads this file.
 
 ## SD hardware
 

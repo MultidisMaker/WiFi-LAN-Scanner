@@ -103,7 +103,7 @@ bool appendMeta(char* out, int cap, int* used, const char* key, const char* valu
 }  // namespace
 
 const char* inventoryCsvHeader() {
-  return "ip,mac,method,name,nameSource,macClass,ouiState,manufacturer";
+  return "ip,mac,method,name,nameSource,macClass,ouiState,manufacturer,services";
 }
 
 bool inventoryScanPath(char* out, size_t cap, uint32_t sequence) {
@@ -141,7 +141,7 @@ bool formatInventoryPreamble(char* out, int cap, const InventoryMeta& meta) {
   char prefix[8];
   char candidates[8];
   char hostCap[8];
-  snprintf(schema, sizeof(schema), "1");
+  snprintf(schema, sizeof(schema), "2");
   snprintf(sequence, sizeof(sequence), "%lu", static_cast<unsigned long>(meta.sequence));
   snprintf(prefix, sizeof(prefix), "%u", meta.prefix);
   snprintf(candidates, sizeof(candidates), "%u", meta.candidates);
@@ -166,8 +166,8 @@ bool formatInventoryRowLine(char* out, int cap, const InventoryRow& row) {
   if (!appendField(out, cap, &used, row.ip, false) || !appendField(out, cap, &used, row.mac, false) ||
       !appendField(out, cap, &used, row.method, false) || !appendField(out, cap, &used, row.name, false) ||
       !appendField(out, cap, &used, row.nameSource, false) || !appendField(out, cap, &used, row.macClass, false) ||
-      !appendField(out, cap, &used, row.ouiState, false) || !appendField(out, cap, &used, row.manufacturer, true) ||
-      !appendChar(out, cap, &used, '\n')) {
+      !appendField(out, cap, &used, row.ouiState, false) || !appendField(out, cap, &used, row.manufacturer, false) ||
+      !appendField(out, cap, &used, row.services, true) || !appendChar(out, cap, &used, '\n')) {
     out[0] = '\0';
     return false;
   }
@@ -184,7 +184,7 @@ bool formatInventoryCsv(char* out, int cap, const InventoryMeta& meta, const Inv
   }
   int used = static_cast<int>(strlen(out));
   for (int i = 0; i < rowCount; ++i) {
-    char line[384];
+    char line[512];
     if (!formatInventoryRowLine(line, static_cast<int>(sizeof(line)), rows[i]) || !appendText(out, cap, &used, line)) {
       out[0] = '\0';
       return false;

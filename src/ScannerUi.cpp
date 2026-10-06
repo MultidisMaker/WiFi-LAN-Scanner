@@ -265,6 +265,9 @@ void paintControl(const Clip& clip, const UiControl& control, bool pressed) {
       vendorY = placed;
     }
   }
+  int noteY = 0;
+  const bool noteOk = control.id >= IdRow0 && control.id < IdRow0 + 6 &&
+                      uiHostTextY(control.y, control.h, 3, 8, &noteY);
   if (control.id == IdProgress) {
     textY = control.y + 4;
   }
@@ -274,6 +277,9 @@ void paintControl(const Clip& clip, const UiControl& control, bool pressed) {
   }
   if (control.vendor[0] != '\0' && control.h >= 44 && control.id != IdProgress) {
     textClip(clip, control.x + 6, vendorY, 1, ink, control.vendor);
+  }
+  if (noteOk && control.note[0] != '\0') {
+    textClip(clip, control.x + 6, noteY, 1, ink, control.note);
   }
 }
 
@@ -345,6 +351,12 @@ void ScannerUi::fillSnapshot(UiSnapshot& snapshot) const {
   snapshot.keyboardPage = keyboardPage_;
   snapshot.listPage = page_;
   snapshot.scan = scanner_->state();
+  const ServiceScan* services = scanner_->serviceScan();
+  if (services != nullptr && services->running()) {
+    snapshot.scan = ScanState::Scanning;
+  } else if (services != nullptr && services->paused()) {
+    snapshot.scan = ScanState::Paused;
+  }
   snapshot.profile = profile_;
   snapshot.settingsPage = settingsPage_;
   copyLabel(snapshot.editText, sizeof(snapshot.editText), editText_);
@@ -387,6 +399,12 @@ void ScannerUi::fillSnapshot(UiSnapshot& snapshot) const {
       formatHostDetail(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), host->nameSource, host->name,
                        host->hasMac, host->mac);
       formatOuiLine(snapshot.rowVendor[row], sizeof(snapshot.rowVendor[row]), host->ouiState, host->manufacturer);
+      if (services != nullptr && (services->run() == ServiceRun::Complete || services->run() == ServiceRun::Stopped)) {
+        const ServiceHostResult* result = services->resultAt(static_cast<uint16_t>(start + row));
+        if (result != nullptr && result->tested > 0) {
+          snprintf(snapshot.rowNote[row], sizeof(snapshot.rowNote[row]), "open %u", result->openCount);
+        }
+      }
     }
   } else if (snapshot.phase == UiPhase::Home) {
     snapshot.showDashboard = true;
@@ -403,6 +421,17 @@ void ScannerUi::fillSnapshot(UiSnapshot& snapshot) const {
       snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "last %s", last);
     } else {
       snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "elapsed %lus", seconds);
+    }
+    if (services != nullptr && services->run() != ServiceRun::Idle) {
+      formatServiceProgressLabel(snapshot.progressLabel, sizeof(snapshot.progressLabel), services->completed(),
+                                 services->planned());
+      if (services->running() || services->paused() || services->run() == ServiceRun::Complete ||
+          services->run() == ServiceRun::Stopped) {
+        formatServiceProgressDetail(snapshot.progressDetail, sizeof(snapshot.progressDetail),
+                                    serviceProfileToken(services->profile()), services->openPorts());
+      }
+    } else if (services != nullptr && scanner_->state() == ScanState::Complete) {
+      snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "Naming");
     }
     formatDevicesFoundLabel(snapshot.newestLabel, sizeof(snapshot.newestLabel), scanner_->observedCount());
     const ObservedHost* newest = scanner_->newest();
@@ -434,7 +463,7 @@ UiPaintFrame ScannerUi::makeFrame(const UiSnapshot& snapshot, const UiControl* c
       frame.screen = UiPaintScreen::Home;
       break;
   }
-  frame.scan = static_cast<int>(scanner_->state());
+  frame.scan = static_cast<int>(snapshot.scan);
   frame.saved = wifi_->hasSavedNetwork();
   frame.station = wifi_->phase() == WifiPhase::Connected;
   frame.processed = scanner_->processedCount();
@@ -447,6 +476,10 @@ UiPaintFrame ScannerUi::makeFrame(const UiSnapshot& snapshot, const UiControl* c
   frame.passLen = wifi_->passwordLength();
   frame.store = static_cast<int>(lastInventoryStore().status);
   frame.profile = static_cast<int>(profile_);
+  if (scanner_->serviceScan() != nullptr) {
+    frame.svcDone = scanner_->serviceScan()->completed();
+    frame.svcPlan = scanner_->serviceScan()->planned();
+  }
   copyLabel(frame.path, sizeof(frame.path), lastInventoryStore().path);
   copyLabel(frame.status, sizeof(frame.status), wifi_->statusText());
   copyLabel(frame.newest, sizeof(frame.newest), snapshot.newestLabel);
@@ -457,6 +490,7 @@ UiPaintFrame ScannerUi::makeFrame(const UiSnapshot& snapshot, const UiControl* c
     stamp = mixText(stamp, snapshot.rowLabel[row]);
     stamp = mixText(stamp, snapshot.rowDetail[row]);
     stamp = mixText(stamp, snapshot.rowVendor[row]);
+    stamp = mixText(stamp, snapshot.rowNote[row]);
   }
   if (snapshot.phase == UiPhase::Settings) {
     stamp = mixText(stamp, snapshot.rangeStart);

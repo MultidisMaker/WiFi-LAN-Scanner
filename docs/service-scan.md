@@ -1,6 +1,6 @@
 # Service Scan design contract
 
-A013 stores a Service Scan profile and shows it on the scanner. It does not open TCP or UDP sockets, send banners, or issue HTTP requests. The scanner remains the authority. A future Remote client reads the selected profile from `AppState` and changes it with the same actions the touchscreen uses.
+The scanner stores a Service Scan profile and, after ARP discovery and name enrichment, opens one TCP connection at a time to MAC-bearing hosts already in that inventory. It does not send banners, HTTP, UDP, or credentials. The scanner remains the authority. Remote reads the selected profile from `AppState` and changes it with the same actions the touchscreen uses.
 
 ## Profiles
 
@@ -14,17 +14,19 @@ The setting lives in `ServiceProfile`. A missing or unrecognized value resolves 
 
 The T-Display does not expose raw timeout knobs.
 
-## Where probes are allowed to run later
+## Where probes run
 
-A later increment may connect only to hosts already present in the ARP-observed inventory. Silence on ARP is not a target. The attempt budget is `observed_host_count * profile_port_count`. It is not `candidate_count * profile_port_count`. The 256-address candidate cap stays an ARP limit and is not multiplied by the port list.
+Service Scan connects only to hosts already present in the ARP-observed inventory that have a MAC. Silence on ARP is not a target. The attempt budget is `observed_mac_host_count * profile_port_count`. It is not `candidate_count * profile_port_count`. The 256-address candidate cap stays an ARP limit and is not multiplied by the port list.
 
-One TCP connect is in flight at a time, matching the one-ARP rule. Pause and stop use the existing scanner states. A per-host ceiling is the attempt count times that profile's timeout. There is no retry.
+One nonblocking TCP connect is in flight at a time. The socket is closed as soon as the attempt is classified, and nothing is written or read. Pause and stop use the existing scanner controls. A new probe is not started while paused. Stop closes the active socket and does not start another. Reset clears the service results with the inventory. There is no retry.
 
-A completed handshake is Open. A reset is Closed. Any other miss is Timeout-or-Unknown. The classification does not use credentials, banners, HTTP requests, or service commands.
+A completed handshake is Open (`o`). An active reject is Closed (`c`): on this ESP32 lwIP build that is `ECONNREFUSED`, `ECONNRESET`, or `ECONNABORTED`. A miss that reaches the profile timeout, or an unreachable host, is Timeout (`t`). Any other socket failure is Error (`e`). Timeout is not stored as closed. The classification does not use credentials, banners, HTTP requests, or service commands.
 
-## Proposed port families
+The connect runs only after the scanner is Complete and PTR/OUI enrichment is idle. It does not return the scanner to Scanning, because that state is what starts discovery and clears the PTR cycle.
 
-These ports are a design table only. A013 does not transmit to them.
+## Port families
+
+These are the ordered TCP lists. Basic is the first three, Common is the first nine, and Detailed is all twenty. The family name is an inventory label, not a vulnerability check.
 
 Basic:
 

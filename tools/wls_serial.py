@@ -412,6 +412,10 @@ def run_hil(port, transcript):
             "WLS-HIL ACTIONS start=1 pause=1 resume=1 stop=1 reset=1 hosts=1 same=1",
         ),
         (
+            "SERVICES",
+            "WLS-HIL SERVICES open=2 closed=1 timeout=1 error=1 once=1 pause=1 resume=1 stop=1 reset=1 planned=6 done=5 targets=2 skipped=1 heap=1",
+        ),
+        (
             "PERSIST",
             "WLS-HIL PERSISTS roundtrip=1 comma=1 quote=1 newline=1 secret=0 sd=skipped",
         ),
@@ -421,7 +425,7 @@ def run_hil(port, transcript):
         transcript.append("> " + command)
         port.write((command + "\n").encode("ascii"))
         port.flush()
-        timeout = 8 if command in ("SCAN", "DISCOVER", "NAMES", "OUI", "ACTIONS", "PERSIST", "RESOURCES") else 4
+        timeout = 8 if command in ("SCAN", "DISCOVER", "NAMES", "OUI", "ACTIONS", "PERSIST", "RESOURCES", "SERVICES") else 4
         got = wait_for(port, lambda line, expected=expected: line == expected, timeout, transcript)
         if got != expected:
             transcript.append("! expected " + expected)

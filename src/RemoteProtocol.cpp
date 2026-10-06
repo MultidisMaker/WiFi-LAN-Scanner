@@ -378,6 +378,11 @@ int writeState(char* out, int outCap, const AppState& state) {
   addInt(buf, state.rangeLimit);
   addRaw(buf, ",\"ack\":\"");
   addEsc(buf, state.ack);
+  char svc[40];
+  snprintf(svc, sizeof(svc), "%c/%u/%u/%u/%u", servicePhaseLetter(state.jobPhase), state.svcPlan, state.svcDone,
+           state.svcOpenHosts, state.svcOpen);
+  addRaw(buf, "\",\"svc\":\"");
+  addEsc(buf, svc);
   addRaw(buf, "\"}");
   if (!buf.ok) {
     return writeErr(out, outCap, "state");
@@ -419,6 +424,30 @@ int writeEnd(char* out, int outCap, int count) {
   return finishFrame(out, outCap, body);
 }
 
+int writeServiceRow(char* out, int outCap, int index, const ServiceWireRow& row) {
+  char body[320];
+  Buf buf{body, static_cast<int>(sizeof(body)), 0, true};
+  addRaw(buf, "{\"v\":1,\"op\":\"SERVICE_ROW\",\"i\":");
+  addInt(buf, index);
+  addRaw(buf, ",\"ip\":\"");
+  addEsc(buf, row.ip);
+  addRaw(buf, "\",\"open\":");
+  addInt(buf, row.openCount);
+  addRaw(buf, ",\"ports\":\"");
+  addEsc(buf, row.ports);
+  addRaw(buf, "\"}");
+  if (!buf.ok) {
+    return writeErr(out, outCap, "services");
+  }
+  return finishFrame(out, outCap, body);
+}
+
+int writeServiceEnd(char* out, int outCap, int count) {
+  char body[64];
+  snprintf(body, sizeof(body), "{\"v\":1,\"op\":\"SERVICE_END\",\"count\":%d}", count);
+  return finishFrame(out, outCap, body);
+}
+
 }  // namespace
 
 int remoteMarkOversize(RemoteSession* session, char* out, int outCap) {
@@ -433,6 +462,24 @@ int remoteMarkOversize(RemoteSession* session, char* out, int outCap) {
 int remotePull(RemoteSession* session, char* out, int outCap, const RemoteServices* services) {
   if (session == nullptr || !session->streaming) {
     return 0;
+  }
+  if (session->streamKind == 1) {
+    if (services == nullptr || services->serviceAt == nullptr) {
+      session->streaming = false;
+      return writeErr(out, outCap, "services");
+    }
+    if (session->rowCursor >= session->rowCount) {
+      session->streaming = false;
+      return writeServiceEnd(out, outCap, session->rowCount);
+    }
+    ServiceWireRow row;
+    if (!services->serviceAt(services->context, session->rowCursor, &row)) {
+      session->streaming = false;
+      return writeErr(out, outCap, "services");
+    }
+    const int index = session->rowCursor;
+    session->rowCursor = static_cast<uint16_t>(session->rowCursor + 1);
+    return writeServiceRow(out, outCap, index, row);
   }
   if (services == nullptr || services->rowAt == nullptr) {
     session->streaming = false;
@@ -562,9 +609,28 @@ int remoteSubmit(RemoteSession* session, const char* line, char* out, int outCap
     }
     session->rowCount = static_cast<uint16_t>(count);
     session->rowCursor = 0;
+    session->streamKind = 0;
     if (count == 0) {
       session->streaming = false;
       return writeEnd(out, outCap, 0);
+    }
+    session->streaming = true;
+    return remotePull(session, out, outCap, services);
+  }
+  if (strcmp(op, "GET_SERVICES") == 0) {
+    if (services == nullptr || services->rowCount == nullptr || services->serviceAt == nullptr) {
+      return writeErr(out, outCap, "services");
+    }
+    const int count = services->rowCount(services->context);
+    if (count < 0 || count > 256) {
+      return writeErr(out, outCap, "services");
+    }
+    session->rowCount = static_cast<uint16_t>(count);
+    session->rowCursor = 0;
+    session->streamKind = 1;
+    if (count == 0) {
+      session->streaming = false;
+      return writeServiceEnd(out, outCap, 0);
     }
     session->streaming = true;
     return remotePull(session, out, outCap, services);

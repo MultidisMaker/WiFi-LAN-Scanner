@@ -25,3 +25,7 @@ bool formatPersistPanel(char* out, size_t cap, const InventoryStoreResult& resul
 // Home progress and device lines. "Addresses 256/256" fits a 22-character label.
 bool formatAddressProgressLabel(char* out, size_t cap, uint16_t processed, uint16_t candidates);
 bool formatDevicesFoundLabel(char* out, size_t cap, uint16_t observed);
+
+// Home progress copy while Service Scan is active or finished. "Services 5120/5120" fits 22 glyphs.
+bool formatServiceProgressLabel(char* out, size_t cap, uint16_t done, uint16_t planned);
+bool formatServiceProgressDetail(char* out, size_t cap, const char* profileToken, uint16_t openPorts);

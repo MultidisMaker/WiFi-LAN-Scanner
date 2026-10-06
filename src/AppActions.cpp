@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "NetMath.h"
+#include "ServiceScan.h"
 
 namespace {
 
@@ -316,8 +317,27 @@ bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
   return true;
 }
 
+const char* serviceJobPhase(ScanState state, const ServiceScan* scan) {
+  if (scan != nullptr && (scan->running() || scan->paused())) {
+    return "svc";
+  }
+  if (scan != nullptr && scan->run() == ServiceRun::Stopped) {
+    return "stop";
+  }
+  if (scan != nullptr && scan->run() == ServiceRun::Complete) {
+    return "done";
+  }
+  if (state == ScanState::Idle) {
+    return "idle";
+  }
+  if (state == ScanState::Complete) {
+    return scan == nullptr ? "done" : "name";
+  }
+  return "disc";
+}
+
 void fillAppState(AppState& out, const AppView& view, const ScannerController& scanner, const AppWifiView& wifi,
-                  ServiceProfile profile) {
+                  ServiceProfile profile, const ServiceScan* services) {
   out = AppState();
   if (view.showingSettings && !view.showingHosts && !view.entryOpen && !wifi.entry && !wifi.results && !view.resultsOpen) {
     out.screen = AppScreen::Settings;
@@ -356,6 +376,21 @@ void fillAppState(AppState& out, const AppView& view, const ScannerController& s
   out.canStart = state == ScanState::Idle || state == ScanState::Complete;
   out.canPause = state == ScanState::Scanning;
   out.canResume = state == ScanState::Paused;
+  const ServiceScan* bound = services != nullptr ? services : scanner.serviceScan();
+  copyToken(out.jobPhase, sizeof(out.jobPhase), serviceJobPhase(state, bound));
+  if (bound != nullptr) {
+    out.svcPlan = bound->planned();
+    out.svcDone = bound->completed();
+    out.svcOpenHosts = bound->openHosts();
+    out.svcOpen = bound->openPorts();
+    if (bound->running()) {
+      out.canPause = true;
+      out.canStart = false;
+    } else if (bound->paused()) {
+      out.canResume = true;
+      out.canStart = false;
+    }
+  }
   copyToken(out.profile, sizeof(out.profile), serviceProfileToken(profile));
   const RangePreview range = scanner.preview();
   copyToken(out.rangeMode, sizeof(out.rangeMode), range.mode == RangeMode::Custom ? "custom" : "automatic");

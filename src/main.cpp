@@ -14,6 +14,8 @@
 #include "ResourceMeter.h"
 #include "ScannerController.h"
 #include "ScannerUi.h"
+#include "ServiceConnect.h"
+#include "ServiceScan.h"
 #include "TouchBoard.h"
 #include "UiPress.h"
 #include "UsbRemote.h"
@@ -29,6 +31,104 @@ WifiService gWifi;
 ScannerController gScanner;
 LwipArpBackend gArp;
 ScannerUi gUi;
+ServiceScan gServices;
+WifiTcpConnect gConnect;
+
+struct ServiceClock {
+  ScanState previous = ScanState::Idle;
+  bool jobOpen = false;
+  bool logged = false;
+  uint16_t printedSerial = 0;
+  uint32_t jobStartMs = 0;
+  uint32_t discoveryEndMs = 0;
+  uint32_t namingEndMs = 0;
+  uint32_t serviceStartMs = 0;
+  uint32_t serviceEndMs = 0;
+};
+
+ServiceClock gServiceClock;
+
+void logServiceProbe() {
+  const uint16_t serial = gServices.probeSerial();
+  if (serial == 0 || serial == gServiceClock.printedSerial) {
+    return;
+  }
+  Ipv4 ip;
+  uint16_t port = 0;
+  ServiceProbeClass outcome = ServiceProbeClass::None;
+  if (gServices.lastProbe(ip, port, outcome)) {
+    char text[16];
+    formatIpv4(ip, text, sizeof(text));
+    const char* name = "error";
+    if (outcome == ServiceProbeClass::Open) {
+      name = "open";
+    } else if (outcome == ServiceProbeClass::Closed) {
+      name = "closed";
+    } else if (outcome == ServiceProbeClass::Timeout) {
+      name = "timeout";
+    }
+    Serial.printf("WLS service result ip=%s port=%u state=%s\n", text, port, name);
+  }
+  gServiceClock.printedSerial = serial;
+}
+
+void tickServices() {
+  const uint32_t now = millis();
+  const ScanState state = gScanner.state();
+  const ScanState previous = gServiceClock.previous;
+  if (previous != ScanState::Starting && state == ScanState::Starting) {
+    gServiceClock = ServiceClock();
+    gServiceClock.jobOpen = true;
+    gServiceClock.jobStartMs = now;
+  }
+  gServiceClock.previous = state;
+  if (state == ScanState::Complete && gServiceClock.jobOpen && gServiceClock.discoveryEndMs == 0) {
+    gServiceClock.discoveryEndMs = now;
+  }
+  const bool namingIdle = nameEnrichmentIdle(gScanner) && dnsEnrichmentIdle(gScanner) && ouiEnrichmentIdle(gScanner);
+  if (namingIdle && gServiceClock.discoveryEndMs != 0 && gServiceClock.namingEndMs == 0) {
+    gServiceClock.namingEndMs = now;
+  }
+  gServices.setProfile(gUi.profile());
+  if (namingIdle && gScanner.armServiceScan(now)) {
+    reportResource("before-services");
+    gServiceClock.serviceStartMs = now;
+    gServiceClock.logged = false;
+    Serial.printf("WLS services arm profile=%s ports=%u targets=%u planned=%u timeoutMs=%lu\n",
+                  serviceProfileToken(gServices.profile()), static_cast<unsigned>(serviceProfilePortCount(gServices.profile())),
+                  gServices.targetCount(), gServices.planned(),
+                  static_cast<unsigned long>(serviceProfileTimeoutMs(gServices.profile())));
+  }
+  gScanner.serviceLoop(now);
+  logServiceProbe();
+  if (!gServiceClock.logged && gServiceClock.serviceStartMs != 0 &&
+      (gServices.run() == ServiceRun::Complete || gServices.run() == ServiceRun::Stopped)) {
+    gServiceClock.serviceEndMs = now;
+    reportResource("after-services");
+    const uint32_t discoveryMs = gServiceClock.discoveryEndMs >= gServiceClock.jobStartMs
+                                     ? gServiceClock.discoveryEndMs - gServiceClock.jobStartMs
+                                     : 0;
+    const uint32_t ptrMs = gServiceClock.namingEndMs >= gServiceClock.discoveryEndMs && gServiceClock.discoveryEndMs != 0
+                               ? gServiceClock.namingEndMs - gServiceClock.discoveryEndMs
+                               : 0;
+    const uint32_t serviceMs = gServiceClock.serviceEndMs >= gServiceClock.serviceStartMs
+                                   ? gServiceClock.serviceEndMs - gServiceClock.serviceStartMs
+                                   : 0;
+    const uint32_t totalMs =
+        gServiceClock.jobStartMs != 0 && gServiceClock.serviceEndMs >= gServiceClock.jobStartMs
+            ? gServiceClock.serviceEndMs - gServiceClock.jobStartMs
+            : serviceMs;
+    Serial.printf(
+        "WLS services summary profile=%s ports=%u targets=%u planned=%u done=%u open=%u closed=%u timeout=%u error=%u "
+        "openHosts=%u discoveryMs=%lu ptrMs=%lu serviceMs=%lu totalMs=%lu phase=%s\n",
+        serviceProfileToken(gServices.profile()), static_cast<unsigned>(serviceProfilePortCount(gServices.profile())),
+        gServices.targetCount(), gServices.planned(), gServices.completed(), gServices.openPorts(), gServices.closedCount(),
+        gServices.timeoutCount(), gServices.errorCount(), gServices.openHosts(), static_cast<unsigned long>(discoveryMs),
+        static_cast<unsigned long>(ptrMs), static_cast<unsigned long>(serviceMs), static_cast<unsigned long>(totalMs),
+        gServices.run() == ServiceRun::Stopped ? "stop" : "done");
+    gServiceClock.logged = true;
+  }
+}
 
 struct ResourceGate {
   ScanState previous = ScanState::Idle;
@@ -52,8 +152,9 @@ void noteResourceMilestones(ScannerController& scanner) {
   if (gResourceGate.previous != ScanState::Complete && now == ScanState::Complete) {
     reportResource("after-scan");
   }
+  const bool serviceIdle = scanner.serviceScan() == nullptr || scanner.serviceScan()->idle();
   const bool enrichIdle = now == ScanState::Complete && nameEnrichmentIdle(scanner) && dnsEnrichmentIdle(scanner) &&
-                          ouiEnrichmentIdle(scanner);
+                          ouiEnrichmentIdle(scanner) && serviceIdle;
   if (enrichIdle && !gResourceGate.sawEnrich) {
     reportResource("after-enrich");
     reportResource("before-persist");
@@ -122,6 +223,8 @@ void setup() {
                 static_cast<unsigned long>(PressTracker::kAckMs));
   Serial.printf("WLS mask-selftest=%s preserved=%s\n", maskOk && preservedOk ? "ok" : "fail", preservedOk ? "yes" : "no");
   gScanner.setBackend(&gArp);
+  gServices.setBackend(&gConnect);
+  gScanner.bindServiceScan(&gServices);
   bindInventoryScanner(&gScanner);
   gUi.begin(gWifi, gScanner);
   usbRemoteBind(&gUi, &gScanner);
@@ -149,6 +252,7 @@ void loop() {
   serviceNameEnrichment(gScanner);
   serviceDnsEnrichment(gScanner);
   serviceOuiEnrichment(gScanner);
+  tickServices();
   noteResourceMilestones(gScanner);
   gUi.loop();
 #if WLS_TEST_MODE

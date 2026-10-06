@@ -16,7 +16,8 @@ These files are compiled into both the firmware and the host tests:
 - `src/UiModel.cpp` — control geometry and synthetic gestures
 - `src/NameRecord.cpp` — hostname sanitizing, source precedence, and the host-row detail line
 - `src/UiRender.cpp` — dirty-region decisions and address-progress percent
-- `src/ServiceProfile.cpp` — Service Scan profile tokens, labels, and invalid-value fallback
+- `src/ServiceProfile.cpp` — Service Scan profile tokens, labels, port lists, and invalid-value fallback
+- `src/ServiceScan.cpp` — connect-only Service Scan scheduling with an injected backend
 
 `src/ScanClock.cpp` supplies `scanNow()` from `millis()` on the device. Host tests supply their own `scanNow()` so transitions can be stepped without waiting. `src/NetworkRange.cpp` and `src/ScannerUi.cpp` adapt the shared helpers to Arduino types and the panel. They are not part of the host build.
 

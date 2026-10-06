@@ -51,7 +51,7 @@ The test image keeps that passphrase in RAM only and does not write it to the pr
 
 ## Layout
 
-`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. Hosts already found by the bounded ARP scan can receive a link-local mDNS hostname and an offline manufacturer label. Positive observations are written as schema-1 CSV under `/WiFi-LAN-Scanner/scans/` on the onboard SD card when a card is present. Touch actions and USB Remote protocol v1 share one action dispatcher. Wi-Fi Remote transport is not implemented. Service enumeration is still deferred. `tools/oui/build_oui_index.py` rebuilds `src/OuiData.gen.inc` from the public IEEE MA-L CSV. See `tools/oui/README.md`, `docs/persistence.md`, and `docs/remote-v1.md`.
+`src/`, `include/`, `lib/`, `data/`, `tools/oui/`, `test/`, and `docs/` are the project layout. Hosts already found by the bounded ARP scan can receive a link-local mDNS hostname and an offline manufacturer label. Positive observations are written as schema-2 CSV under `/WiFi-LAN-Scanner/scans/` on the onboard SD card when a card is present. After discovery, a connect-only TCP Service Scan records open, closed, timeout, and error for the selected profile. Touch actions and USB Remote protocol v1 share one action dispatcher. Wi-Fi Remote transport is not implemented. `tools/oui/build_oui_index.py` rebuilds `src/OuiData.gen.inc` from the public IEEE MA-L CSV. See `tools/oui/README.md`, `docs/persistence.md`, and `docs/remote-v1.md`.
 
 ## Community
 

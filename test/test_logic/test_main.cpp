@@ -23,6 +23,7 @@
 #include "UiStatus.h"
 #include "ScannerController.h"
 #include "ServiceProfile.h"
+#include "ServiceScan.h"
 #include "UiModel.h"
 #include "UiPress.h"
 #include "UiRender.h"
@@ -1111,14 +1112,14 @@ void test_inventory_csv_escape_and_publish(void) {
   TEST_ASSERT_TRUE(strstr(rowLine, "\"Say \"\"hi\"\"\"") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, rowLine) != nullptr);
   TEST_ASSERT_TRUE(strcmp(csv, again) == 0);
-  TEST_ASSERT_TRUE(strstr(csv, "# schema=1\n") != nullptr);
+  TEST_ASSERT_TRUE(strstr(csv, "# schema=2\n") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, "# sequence=1\n") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, "# station=10.0.0.5\n") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, "# prefix=28\n") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, "# gateway=10.0.0.1\n") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, "# candidates=14\n") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, "# cap=256\n") != nullptr);
-  TEST_ASSERT_TRUE(strstr(csv, inventoryCsvHeader()) == csv + strlen("# schema=1\n# sequence=1\n# station=10.0.0.5\n# prefix=28\n# gateway=10.0.0.1\n# candidates=14\n# cap=256\n"));
+  TEST_ASSERT_TRUE(strstr(csv, inventoryCsvHeader()) == csv + strlen("# schema=2\n# sequence=1\n# station=10.0.0.5\n# prefix=28\n# gateway=10.0.0.1\n# candidates=14\n# cap=256\n"));
   TEST_ASSERT_TRUE(strstr(csv, "\"a,b\"") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, "\"Acme, Widgets\"") != nullptr);
   TEST_ASSERT_TRUE(strstr(csv, "\"Say \"\"hi\"\"\"") != nullptr);
@@ -2334,7 +2335,7 @@ bool lineInsideCardAndRegion(int y, int textH, int cardY, int cardH) {
 void test_host_card_lines_stay_in_one_region(void) {
   for (int row = 0; row < 6; ++row) {
     const int cardY = 40 + row * 52;
-    for (int line = 0; line < 3; ++line) {
+    for (int line = 0; line < 4; ++line) {
       int y = -1;
       TEST_ASSERT_TRUE(uiHostTextY(cardY, 48, line, 8, &y));
       TEST_ASSERT_TRUE(lineInsideCardAndRegion(y, 8, cardY, 48));
@@ -2475,6 +2476,312 @@ void test_ptr_question_and_reply(void) {
   TEST_ASSERT_EQUAL_STRING("resolved", ptrReplyLabel(reply));
 }
 
+class ScriptedConnect : public ServiceConnectBackend {
+ public:
+  ServiceConnectStatus script[64] = {};
+  int scriptCount = 0;
+  int cursor = 0;
+  int starts = 0;
+  int cancels = 0;
+  bool pending = false;
+  ServiceConnectStatus held = ServiceConnectStatus::Pending;
+  uint16_t ports[64] = {};
+  Ipv4 ips[64] = {};
+
+  void start(const Ipv4& ip, uint16_t port, uint32_t nowMs, uint32_t timeoutMs) override {
+    (void)nowMs;
+    (void)timeoutMs;
+    if (starts < 64) {
+      ports[starts] = port;
+      ips[starts] = ip;
+    }
+    ++starts;
+    pending = true;
+    held = cursor < scriptCount ? script[cursor++] : ServiceConnectStatus::Error;
+  }
+
+  ServiceConnectStatus poll(uint32_t nowMs) override {
+    (void)nowMs;
+    if (!pending) {
+      return ServiceConnectStatus::Error;
+    }
+    if (held == ServiceConnectStatus::Pending) {
+      return ServiceConnectStatus::Pending;
+    }
+    pending = false;
+    return held;
+  }
+
+  void cancel() override {
+    ++cancels;
+    pending = false;
+    held = ServiceConnectStatus::Pending;
+  }
+};
+
+static void fillMac(HostInventory& inventory, uint8_t last, uint8_t mac0) {
+  const uint8_t mac[6] = {mac0, 0x11, 0x22, 0x33, 0x44, last};
+  inventory.observe(ipv4(10, 0, 0, last), EvidenceRank::Neighbor, true, mac, false, 0, 1, "arp");
+}
+
+static void test_service_profiles_and_scan(void) {
+  TEST_ASSERT_EQUAL_UINT8(3, serviceProfilePortCount(ServiceProfile::Basic));
+  TEST_ASSERT_EQUAL_UINT8(9, serviceProfilePortCount(ServiceProfile::Common));
+  TEST_ASSERT_EQUAL_UINT8(20, serviceProfilePortCount(ServiceProfile::Detailed));
+  TEST_ASSERT_EQUAL_UINT16(22, serviceProfilePort(ServiceProfile::Basic, 0));
+  TEST_ASSERT_EQUAL_UINT16(80, serviceProfilePort(ServiceProfile::Basic, 1));
+  TEST_ASSERT_EQUAL_UINT16(443, serviceProfilePort(ServiceProfile::Basic, 2));
+  TEST_ASSERT_EQUAL_UINT16(0, serviceProfilePort(ServiceProfile::Basic, 3));
+  const uint16_t common[] = {22, 80, 443, 445, 548, 631, 8080, 8443, 9100};
+  for (uint8_t i = 0; i < 9; ++i) {
+    TEST_ASSERT_EQUAL_UINT16(common[i], serviceProfilePort(ServiceProfile::Common, i));
+  }
+  const uint16_t extra[] = {21, 23, 25, 53, 110, 143, 587, 993, 995, 1883, 8883};
+  for (uint8_t i = 0; i < 11; ++i) {
+    TEST_ASSERT_EQUAL_UINT16(extra[i], serviceProfilePort(ServiceProfile::Detailed, static_cast<uint8_t>(9 + i)));
+  }
+  TEST_ASSERT_EQUAL_UINT32(200, serviceProfileTimeoutMs(ServiceProfile::Basic));
+  TEST_ASSERT_EQUAL_UINT32(250, serviceProfileTimeoutMs(ServiceProfile::Common));
+  TEST_ASSERT_EQUAL_UINT32(300, serviceProfileTimeoutMs(ServiceProfile::Detailed));
+  TEST_ASSERT_EQUAL_STRING("ssh", serviceProfilePortFamily(ServiceProfile::Basic, 0));
+  TEST_ASSERT_TRUE(serviceProfilePortFamily(ServiceProfile::Basic, 3) == nullptr);
+
+  HostInventory inventory;
+  fillMac(inventory, 1, 0x00);
+  inventory.observe(ipv4(10, 0, 0, 2), EvidenceRank::Answered, false, nullptr, false, 0, 1, "arp");
+  fillMac(inventory, 3, 0x00);
+  ScriptedConnect backend;
+  backend.script[0] = ServiceConnectStatus::Open;
+  backend.script[1] = ServiceConnectStatus::Closed;
+  backend.script[2] = ServiceConnectStatus::Timeout;
+  backend.script[3] = ServiceConnectStatus::Error;
+  backend.script[4] = ServiceConnectStatus::Open;
+  backend.script[5] = ServiceConnectStatus::Pending;
+  backend.scriptCount = 6;
+  ServiceScan scan;
+  scan.setBackend(&backend);
+  scan.setProfile(ServiceProfile::Basic);
+  TEST_ASSERT_TRUE(scan.arm(inventory, 0));
+  TEST_ASSERT_EQUAL_UINT16(2, scan.targetCount());
+  TEST_ASSERT_EQUAL_UINT16(6, scan.planned());
+  for (int step = 0; step < 5; ++step) {
+    scan.loop(static_cast<uint32_t>(step), inventory);
+  }
+  const uint16_t startedAtPause = scan.startedCount();
+  const uint16_t doneAtPause = scan.completed();
+  scan.pause();
+  scan.loop(20, inventory);
+  TEST_ASSERT_TRUE(scan.paused());
+  TEST_ASSERT_EQUAL_UINT16(startedAtPause, scan.startedCount());
+  TEST_ASSERT_EQUAL_UINT16(doneAtPause, scan.completed());
+  scan.resume();
+  scan.loop(21, inventory);
+  TEST_ASSERT_EQUAL_UINT16(5, scan.completed());
+  TEST_ASSERT_EQUAL_UINT16(6, scan.startedCount());
+  scan.stop();
+  scan.loop(22, inventory);
+  TEST_ASSERT_TRUE(scan.run() == ServiceRun::Stopped);
+  TEST_ASSERT_EQUAL_UINT16(5, scan.completed());
+  TEST_ASSERT_EQUAL_UINT16(6, scan.startedCount());
+  TEST_ASSERT_EQUAL_UINT16(1, scan.cancelledCount());
+  TEST_ASSERT_EQUAL_INT(1, backend.cancels);
+  TEST_ASSERT_EQUAL_UINT16(22, backend.ports[0]);
+  TEST_ASSERT_EQUAL_UINT16(80, backend.ports[1]);
+  TEST_ASSERT_EQUAL_UINT16(443, backend.ports[2]);
+  TEST_ASSERT_EQUAL_UINT8(1, backend.ips[0].octet[3]);
+  TEST_ASSERT_EQUAL_UINT8(3, backend.ips[3].octet[3]);
+  TEST_ASSERT_TRUE(scan.resultAt(1)->tested == 0);
+  TEST_ASSERT_TRUE(scan.resultAt(0)->state[0] == ServiceProbeClass::Open);
+  TEST_ASSERT_TRUE(scan.resultAt(0)->state[1] == ServiceProbeClass::Closed);
+  TEST_ASSERT_TRUE(scan.resultAt(0)->state[2] == ServiceProbeClass::Timeout);
+  TEST_ASSERT_TRUE(scan.resultAt(2)->state[0] == ServiceProbeClass::Error);
+  TEST_ASSERT_EQUAL_UINT16(2, scan.openPorts());
+  TEST_ASSERT_EQUAL_UINT16(1, scan.closedCount());
+  TEST_ASSERT_EQUAL_UINT16(1, scan.timeoutCount());
+  TEST_ASSERT_EQUAL_UINT16(1, scan.errorCount());
+  char field[160];
+  TEST_ASSERT_TRUE(formatServiceField(field, sizeof(field), scan.profile(), scan.resultAt(0)));
+  TEST_ASSERT_EQUAL_STRING("22:o|80:c|443:t", field);
+  InventoryRow row;
+  row.ip[0] = '1';
+  snprintf(row.services, sizeof(row.services), "%s", field);
+  snprintf(row.manufacturer, sizeof(row.manufacturer), "Acme, Widgets");
+  char line[512];
+  TEST_ASSERT_TRUE(formatInventoryRowLine(line, static_cast<int>(sizeof(line)), row));
+  TEST_ASSERT_TRUE(strstr(line, "\"Acme, Widgets\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "22:o|80:c|443:t") != nullptr);
+  ScannerController controller;
+  controller.bindServiceScan(&scan);
+  scan.reset();
+  backend = ScriptedConnect();
+  backend.script[0] = ServiceConnectStatus::Pending;
+  backend.scriptCount = 1;
+  scan.setBackend(&backend);
+  scan.setProfile(ServiceProfile::Basic);
+  TEST_ASSERT_TRUE(scan.arm(inventory, 0));
+  scan.loop(30, inventory);
+  TEST_ASSERT_TRUE(scan.running());
+  controller.pause();
+  TEST_ASSERT_TRUE(scan.paused());
+  controller.resume();
+  TEST_ASSERT_TRUE(scan.running());
+  TEST_ASSERT_EQUAL_INT(1, backend.starts);
+  controller.stop();
+  TEST_ASSERT_TRUE(scan.run() == ServiceRun::Stopped);
+  TEST_ASSERT_EQUAL_INT(1, backend.cancels);
+  controller.reset();
+  TEST_ASSERT_TRUE(scan.run() == ServiceRun::Idle);
+  TEST_ASSERT_EQUAL_UINT16(0, scan.planned());
+  TEST_ASSERT_EQUAL_UINT8(0, scan.resultAt(0)->tested);
+
+  ScriptedConnect again;
+  for (int i = 0; i < 40; ++i) {
+    again.script[i] = ServiceConnectStatus::Closed;
+  }
+  again.scriptCount = 40;
+  ServiceScan detailed;
+  detailed.setBackend(&again);
+  detailed.setProfile(ServiceProfile::Detailed);
+  HostInventory one;
+  fillMac(one, 9, 0x02);
+  TEST_ASSERT_TRUE(detailed.arm(one, 0));
+  TEST_ASSERT_EQUAL_UINT16(20, detailed.planned());
+  for (int step = 0; step < 40 && detailed.running(); ++step) {
+    detailed.loop(static_cast<uint32_t>(step), one);
+  }
+  TEST_ASSERT_TRUE(detailed.run() == ServiceRun::Complete);
+  TEST_ASSERT_EQUAL_UINT16(20, detailed.completed());
+  TEST_ASSERT_EQUAL_UINT16(20, detailed.startedCount());
+  TEST_ASSERT_EQUAL_UINT16(8883, again.ports[19]);
+  TEST_ASSERT_EQUAL_UINT16(0, again.ports[20]);
+
+  char label[22];
+  char detail[22];
+  TEST_ASSERT_TRUE(formatServiceProgressLabel(label, sizeof(label), 5120, 5120));
+  TEST_ASSERT_TRUE(formatServiceProgressDetail(detail, sizeof(detail), "detailed", 5120));
+  TEST_ASSERT_TRUE(strlen(label) < sizeof(label));
+  TEST_ASSERT_TRUE(strlen(detail) < sizeof(detail));
+
+  UiSnapshot hosts = homeSnapshot();
+  hosts.phase = UiPhase::Hosts;
+  hosts.rowPresent[0] = true;
+  snprintf(hosts.rowLabel[0], sizeof(hosts.rowLabel[0]), "10.0.0.1");
+  snprintf(hosts.rowNote[0], sizeof(hosts.rowNote[0]), "open 2");
+  UiControl controls[8];
+  const int count = collectUiControls(controls, 8, hosts);
+  TEST_ASSERT_TRUE(count >= 1);
+  TEST_ASSERT_EQUAL_STRING("open 2", controls[0].note);
+
+  ServiceHostResult full;
+  full.tested = 20;
+  full.openCount = 20;
+  for (uint8_t i = 0; i < 20; ++i) {
+    full.state[i] = ServiceProbeClass::Open;
+  }
+  char ports[160];
+  TEST_ASSERT_TRUE(formatServiceWirePorts(ports, sizeof(ports), ServiceProfile::Detailed, &full));
+  struct WireHolder {
+    char ports[160];
+  } holder;
+  snprintf(holder.ports, sizeof(holder.ports), "%s", ports);
+  RemoteServices services;
+  services.rowCount = [](void* context) -> int {
+    (void)context;
+    return 1;
+  };
+  services.serviceAt = [](void* context, int index, ServiceWireRow* out) -> bool {
+    auto* held = static_cast<WireHolder*>(context);
+    if (out == nullptr || index != 0 || held == nullptr) {
+      return false;
+    }
+    *out = ServiceWireRow();
+    snprintf(out->ip, sizeof(out->ip), "255.255.255.255");
+    snprintf(out->ports, sizeof(out->ports), "%s", held->ports);
+    out->openCount = 20;
+    return true;
+  };
+  services.rowAt = [](void* context, int index, InventoryRow* out) -> bool {
+    (void)context;
+    if (out == nullptr || index != 0) {
+      return false;
+    }
+    *out = InventoryRow();
+    snprintf(out->ip, sizeof(out->ip), "10.0.0.1");
+    return true;
+  };
+  services.context = &holder;
+  RemoteSession session;
+  char frame[576];
+  int n = remoteSubmit(&session, "@R1 {\"v\":1,\"op\":\"HELLO\"}", frame, static_cast<int>(sizeof(frame)), &services);
+  TEST_ASSERT_TRUE(strstr(frame, "HELLO_ACK") != nullptr);
+  n = remoteSubmit(&session, "@R1 {\"v\":1,\"op\":\"GET_SERVICES\"}", frame, static_cast<int>(sizeof(frame)), &services);
+  TEST_ASSERT_TRUE(n > 0);
+  TEST_ASSERT_TRUE(strstr(frame, "\"op\":\"SERVICE_ROW\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(frame, ports) != nullptr);
+  TEST_ASSERT_TRUE(strchr(frame, '\n') != nullptr);
+  const size_t beforeNewline = static_cast<size_t>(strchr(frame, '\n') - frame);
+  TEST_ASSERT_TRUE(beforeNewline <= 320);
+  n = remotePull(&session, frame, static_cast<int>(sizeof(frame)), &services);
+  TEST_ASSERT_TRUE(strstr(frame, "\"op\":\"SERVICE_END\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(frame, "\"count\":1") != nullptr);
+  n = remoteSubmit(&session, "@R1 {\"v\":1,\"op\":\"GET_RESULTS\"}", frame, static_cast<int>(sizeof(frame)), &services);
+  TEST_ASSERT_TRUE(strstr(frame, "\"op\":\"RESULT_ROW\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(frame, "ports") == nullptr);
+  remotePull(&session, frame, static_cast<int>(sizeof(frame)), &services);
+
+  RemoteWorld world;
+  world.haveState = true;
+  world.state.screen = AppScreen::Settings;
+  snprintf(world.state.wifiPhase, sizeof(world.state.wifiPhase), "connecting");
+  memset(world.state.ssid, 'S', 32);
+  world.state.ssid[32] = '\0';
+  snprintf(world.state.scan, sizeof(world.state.scan), "SCANNING");
+  world.state.processed = 256;
+  world.state.candidates = 256;
+  world.state.observed = 256;
+  snprintf(world.state.current, sizeof(world.state.current), "255.255.255.255");
+  snprintf(world.state.last, sizeof(world.state.last), "255.255.255.255");
+  snprintf(world.state.newest, sizeof(world.state.newest), "255.255.255.255");
+  world.state.elapsedMs = 2147483647u;
+  world.state.hostsOpen = true;
+  world.state.page = 42;
+  world.state.canStart = true;
+  world.state.canPause = true;
+  world.state.canResume = true;
+  snprintf(world.state.profile, sizeof(world.state.profile), "detailed");
+  snprintf(world.state.rangeMode, sizeof(world.state.rangeMode), "automatic");
+  snprintf(world.state.rangeStart, sizeof(world.state.rangeStart), "255.255.255.255");
+  snprintf(world.state.rangeEnd, sizeof(world.state.rangeEnd), "255.255.255.255");
+  world.state.rangeLimit = 256;
+  snprintf(world.state.ack, sizeof(world.state.ack), "windownext");
+  snprintf(world.state.jobPhase, sizeof(world.state.jobPhase), "svc");
+  world.state.svcPlan = 5120;
+  world.state.svcDone = 5120;
+  world.state.svcOpenHosts = 256;
+  world.state.svcOpen = 5120;
+  RemoteSession stateSession;
+  n = submitWorld(stateSession, world, "@R1 {\"v\":1,\"op\":\"HELLO\"}", frame, static_cast<int>(sizeof(frame)));
+  TEST_ASSERT_TRUE(strstr(frame, "HELLO_ACK") != nullptr);
+  n = submitWorld(stateSession, world, "@R1 {\"v\":1,\"op\":\"GET_STATE\"}", frame, static_cast<int>(sizeof(frame)));
+  TEST_ASSERT_TRUE(n > 0);
+  TEST_ASSERT_TRUE(strstr(frame, "\"reason\":\"state\"") == nullptr);
+  TEST_ASSERT_TRUE(strstr(frame, "\"svc\":\"s/5120/5120/256/5120\"") != nullptr);
+  TEST_ASSERT_TRUE(n < 512);
+  TEST_ASSERT_TRUE(strstr(frame, "password") == nullptr);
+  AppState diagnosticState;
+  snprintf(diagnosticState.wifiPhase, sizeof(diagnosticState.wifiPhase), "connected");
+  snprintf(diagnosticState.ssid, sizeof(diagnosticState.ssid), "TFMiddle");
+  snprintf(diagnosticState.scan, sizeof(diagnosticState.scan), "COMPLETE");
+  snprintf(diagnosticState.jobPhase, sizeof(diagnosticState.jobPhase), "svc");
+  diagnosticState.svcPlan = 27;
+  diagnosticState.svcDone = 27;
+  diagnosticState.svcOpen = 2;
+  char diagnostic[240];
+  TEST_ASSERT_TRUE(formatAppStateLine(diagnostic, static_cast<int>(sizeof(diagnostic)), diagnosticState) > 0);
+  TEST_ASSERT_TRUE(strstr(diagnostic, "svcPlan") == nullptr);
+  TEST_ASSERT_TRUE(strstr(diagnostic, "jobPhase") == nullptr);
+}
+
 static int gFailures = 0;
 
 void setup() {
@@ -2525,6 +2832,7 @@ void setup() {
   RUN_TEST(test_control_affordance_and_address_range);
   RUN_TEST(test_remote_action_busy_result);
   RUN_TEST(test_resource_line_injected);
+  RUN_TEST(test_service_profiles_and_scan);
   gFailures = UNITY_END();
 }
 

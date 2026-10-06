@@ -3,6 +3,7 @@
 #include "BoardConfig.h"
 #include "FakeDiscovery.h"
 #include "ScanClock.h"
+#include "ServiceScan.h"
 
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -166,7 +167,10 @@ bool ScannerController::windowPrev() {
 }
 
 RangePreview ScannerController::preview() const {
-  CandidatePlan plan;
+  // The 256-address plan is about 1 KB. Keeping it off the loop-task stack
+  // leaves room for the UI snapshot and the Remote frame in the same call.
+  // previewAddressRange replaces the plan on every call. Not reentrant.
+  static CandidatePlan plan;
   RangePreview preview;
   if (!connected_) {
     preview.mode = window_.mode;
@@ -193,6 +197,23 @@ void ScannerController::armDisconnected() {
   armed_ = NetFacts();
 }
 
+void ScannerController::bindServiceScan(ServiceScan* scan) { services_ = scan; }
+
+const ServiceScan* ScannerController::serviceScan() const { return services_; }
+
+bool ScannerController::armServiceScan(uint32_t nowMs) {
+  if (services_ == nullptr || state_ != ScanState::Complete || services_->run() != ServiceRun::Idle) {
+    return false;
+  }
+  return services_->arm(inventory_, nowMs);
+}
+
+void ScannerController::serviceLoop(uint32_t nowMs) {
+  if (services_ != nullptr && services_->running()) {
+    services_->loop(nowMs, inventory_);
+  }
+}
+
 void ScannerController::start() {
   if (state_ != ScanState::Idle && state_ != ScanState::Complete) {
     return;
@@ -206,6 +227,9 @@ void ScannerController::start() {
     plan_ = CandidatePlan();
     return;
   }
+  if (services_ != nullptr) {
+    services_->reset();
+  }
   inventory_.clear();
   cursor_ = 0;
   processed_ = 0;
@@ -217,18 +241,30 @@ void ScannerController::start() {
 }
 
 void ScannerController::pause() {
+  if (services_ != nullptr && services_->running()) {
+    services_->pause();
+    return;
+  }
   if (state_ == ScanState::Scanning) {
     enter(ScanState::Paused);
   }
 }
 
 void ScannerController::resume() {
+  if (services_ != nullptr && services_->paused()) {
+    services_->resume();
+    return;
+  }
   if (state_ == ScanState::Paused) {
     enter(ScanState::Scanning);
   }
 }
 
 void ScannerController::stop() {
+  if (services_ != nullptr && (services_->running() || services_->paused())) {
+    services_->stop();
+    return;
+  }
   if (state_ == ScanState::Scanning || state_ == ScanState::Paused || state_ == ScanState::Starting) {
     if (backend_ != nullptr) {
       backend_->cancel();
@@ -240,12 +276,18 @@ void ScannerController::stop() {
 }
 
 void ScannerController::acknowledge() {
+  if (services_ != nullptr && (services_->running() || services_->paused())) {
+    services_->stop();
+  }
   if (state_ == ScanState::Complete) {
     enter(ScanState::Idle);
   }
 }
 
 void ScannerController::reset() {
+  if (services_ != nullptr) {
+    services_->reset();
+  }
   if (backend_ != nullptr) {
     backend_->cancel();
     backend_->reset();

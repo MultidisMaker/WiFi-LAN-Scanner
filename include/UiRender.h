@@ -52,6 +52,8 @@ struct UiPaintFrame {
   int passLen = 0;
   int store = 0;
   int profile = 1;
+  uint16_t svcDone = 0;
+  uint16_t svcPlan = 0;
   uint32_t listStamp = 0;
   char path[64] = {};
   char status[48] = {};

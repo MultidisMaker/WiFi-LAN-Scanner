@@ -14,6 +14,7 @@
 #include "NetworkRange.h"
 #include "Oui.h"
 #include "ScannerController.h"
+#include "ServiceScan.h"
 
 namespace {
 
@@ -24,7 +25,7 @@ bool gAbsent = false;
 bool gLegacyReported = false;
 uint32_t gNextSequence = 1;
 char gPreamble[512];
-char gRowLine[384];
+char gRowLine[512];
 
 InventoryStoreResult makeResult(InventoryStoreStatus status, const char* detail, const char* path = nullptr) {
   InventoryStoreResult result;
@@ -191,6 +192,10 @@ InventoryStoreResult storeInventoryOnSd() {
       }
       InventoryRow row;
       inventoryRowFromHost(row, *host);
+      const ServiceScan* services = gScanner->serviceScan();
+      if (services != nullptr) {
+        formatServiceField(row.services, sizeof(row.services), services->profile(), services->resultAt(i));
+      }
       if (!formatInventoryRowLine(gRowLine, static_cast<int>(sizeof(gRowLine)), row) || !writeAll(file, gRowLine)) {
         wrote = false;
       } else {
@@ -227,7 +232,7 @@ InventoryStoreResult storeInventoryOnSd() {
     again.close();
   }
   deselectBoth();
-  if (readCount != 11 || memcmp(signature, "# schema=1\n", 11) != 0) {
+  if (readCount != 11 || memcmp(signature, "# schema=2\n", 11) != 0) {
     Serial.println("WLS sd status=fail detail=readback");
     return makeResult(InventoryStoreStatus::Failed, "readback");
   }

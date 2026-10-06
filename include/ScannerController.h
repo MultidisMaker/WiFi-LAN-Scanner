@@ -18,6 +18,8 @@ enum class ScanState : uint8_t {
 
 const char* scanStateName(ScanState state);
 
+class ServiceScan;
+
 class ScannerController {
  public:
   ScanState state() const;
@@ -41,6 +43,11 @@ class ScannerController {
   void reset();
   void loop();
   bool selfTest();
+  void bindServiceScan(ServiceScan* scan);
+  const ServiceScan* serviceScan() const;
+  // Arms only while this controller is Complete and the scan is still idle.
+  bool armServiceScan(uint32_t nowMs);
+  void serviceLoop(uint32_t nowMs);
 
   uint16_t candidateCount() const;
   uint16_t processedCount() const;
@@ -63,6 +70,7 @@ class ScannerController {
   NetFacts armed_ = {};
   AddressWindow window_ = {};
   DiscoveryBackend* backend_ = nullptr;
+  ServiceScan* services_ = nullptr;
   CandidatePlan plan_ = {};
   HostInventory inventory_;
   uint16_t cursor_ = 0;

@@ -98,3 +98,18 @@ bool formatDevicesFoundLabel(char* out, size_t cap, uint16_t observed) {
   }
   return finish(out, cap, snprintf(out, cap, "Devices found %u", observed));
 }
+
+bool formatServiceProgressLabel(char* out, size_t cap, uint16_t done, uint16_t planned) {
+  if (out == nullptr || cap < 8) {
+    return false;
+  }
+  return finish(out, cap, snprintf(out, cap, "Services %u/%u", done, planned));
+}
+
+bool formatServiceProgressDetail(char* out, size_t cap, const char* profileToken, uint16_t openPorts) {
+  if (out == nullptr || cap < 8) {
+    return false;
+  }
+  const char* token = profileToken != nullptr && profileToken[0] != '\0' ? profileToken : "common";
+  return finish(out, cap, snprintf(out, cap, "%s open %u", token, openPorts));
+}

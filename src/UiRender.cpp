@@ -127,6 +127,9 @@ uint32_t dirtyRegions(const UiPaintFrame& prev, const UiPaintFrame& next) {
       mask |= UiRegionNetwork;
     }
   }
+  if (home && (prev.svcDone != next.svcDone || prev.svcPlan != next.svcPlan)) {
+    mask |= UiRegionProgress;
+  }
   if (home && (prev.processed != next.processed || prev.candidates != next.candidates || prev.elapsedSec != next.elapsedSec)) {
     mask |= UiRegionProgress;
     if (!next.station) {
