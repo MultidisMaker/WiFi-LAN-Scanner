@@ -9,7 +9,10 @@
 #include "BoardConfig.h"
 #include "DisplayBoard.h"
 #include "InventoryExport.h"
+#include "NameRecord.h"
+#include "NetMath.h"
 #include "NetworkRange.h"
+#include "Oui.h"
 #include "ScannerController.h"
 
 namespace {
@@ -95,7 +98,9 @@ bool writeAll(File& file, const char* text) {
 
 bool choosePath(char* path, size_t cap, uint32_t* sequence) {
   uint32_t candidate = gNextSequence == 0 ? 1 : gNextSequence;
-  for (int attempt = 0; attempt < 32; ++attempt) {
+  // The counter restarts at 1 on each boot. Earlier sessions keep
+  // scan-########.csv, so this probe walks past those names.
+  for (int attempt = 0; attempt < 1024; ++attempt) {
     if (!inventoryScanPath(path, cap, candidate)) {
       return false;
     }
@@ -188,6 +193,17 @@ InventoryStoreResult storeInventoryOnSd() {
       inventoryRowFromHost(row, *host);
       if (!formatInventoryRowLine(gRowLine, static_cast<int>(sizeof(gRowLine)), row) || !writeAll(file, gRowLine)) {
         wrote = false;
+      } else {
+        // Same bytes just written. Bounded by the inventory cap so live CSV
+        // identity can be compared with Remote without a second SD read.
+        Serial.printf("WLS sd row=%s", gRowLine);
+        char detail[48];
+        char vendor[40];
+        char ipText[16];
+        formatHostDetail(detail, sizeof(detail), host->nameSource, host->name, host->hasMac, host->mac);
+        formatOuiLine(vendor, sizeof(vendor), host->ouiState, host->manufacturer);
+        formatIpv4(host->ip, ipText, sizeof(ipText));
+        Serial.printf("WLS card ip=%s ~~ detail=%s ~~ vendor=%s\n", ipText, detail, vendor[0] != '\0' ? vendor : "none");
       }
     }
   }

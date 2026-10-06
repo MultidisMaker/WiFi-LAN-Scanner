@@ -64,3 +64,7 @@ int progressPercent(uint16_t processed, uint16_t candidates);
 
 UiRegionRect uiRegionRect(uint32_t bit);
 uint32_t dirtyRegions(const UiPaintFrame& prev, const UiPaintFrame& next);
+
+// Places one text line inside a host card so the whole glyph box stays in the card
+// and inside a single dirty region. lineIndex 0 is the top line.
+bool uiHostTextY(int cardY, int cardH, int lineIndex, int textH, int* outY);

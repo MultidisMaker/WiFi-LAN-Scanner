@@ -9,7 +9,7 @@ namespace {
 
 constexpr size_t kReadCap = 128;
 constexpr size_t kStoredCap = 31;
-constexpr size_t kDisplayCap = 13;
+constexpr int kCardGlyphs = 33;
 
 bool isNameChar(unsigned char c) {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
@@ -38,10 +38,10 @@ bool endsWithLocal(const char* text, size_t length) {
 }
 
 int sourceRank(NameSource source) {
-  if (source == NameSource::Mdns) {
+  if (source == NameSource::ReverseDns) {
     return 2;
   }
-  if (source == NameSource::ReverseDns) {
+  if (source == NameSource::Mdns) {
     return 1;
   }
   return 0;
@@ -137,23 +137,26 @@ void formatHostDetail(char* dest, size_t destLen, NameSource source, const char*
   if (dest == nullptr || destLen == 0) {
     return;
   }
-  char shown[kDisplayCap + 1];
-  const char* use = "unknown";
-  char tag = 'u';
-  if (source != NameSource::None && storedName != nullptr && storedName[0] != '\0') {
-    size_t i = 0;
-    for (; i < kDisplayCap && storedName[i] != '\0'; ++i) {
-      shown[i] = storedName[i];
-    }
-    shown[i] = '\0';
-    use = shown;
-    tag = source == NameSource::Mdns ? 'm' : 'd';
-  }
   char macText[18];
   if (hasMac && mac != nullptr) {
     formatMac(mac, macText, sizeof(macText));
   } else {
     copyToken(macText, sizeof(macText), "MAC unknown");
   }
-  snprintf(dest, destLen, "%c:%s %s", tag, use, macText);
+  const int macLen = static_cast<int>(strlen(macText));
+  int nameBudget = kCardGlyphs - 6 - 1 - macLen;
+  if (nameBudget < 1) {
+    nameBudget = 1;
+  }
+  const char* raw = "unknown";
+  if (source != NameSource::None && storedName != nullptr && storedName[0] != '\0') {
+    raw = storedName;
+  }
+  char shown[16];
+  int i = 0;
+  for (; raw[i] != '\0' && i < nameBudget && i < static_cast<int>(sizeof(shown) - 1); ++i) {
+    shown[i] = raw[i];
+  }
+  shown[i] = '\0';
+  snprintf(dest, destLen, "Name: %s %s", shown, macText);
 }

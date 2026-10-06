@@ -4,6 +4,7 @@
 
 #include "BoardConfig.h"
 #include "DisplayBoard.h"
+#include "DnsPtrEnricher.h"
 #include "LwipArpBackend.h"
 #include "InventoryStore.h"
 #include "MdnsEnricher.h"
@@ -51,7 +52,8 @@ void noteResourceMilestones(ScannerController& scanner) {
   if (gResourceGate.previous != ScanState::Complete && now == ScanState::Complete) {
     reportResource("after-scan");
   }
-  const bool enrichIdle = now == ScanState::Complete && nameEnrichmentIdle(scanner) && ouiEnrichmentIdle(scanner);
+  const bool enrichIdle = now == ScanState::Complete && nameEnrichmentIdle(scanner) && dnsEnrichmentIdle(scanner) &&
+                          ouiEnrichmentIdle(scanner);
   if (enrichIdle && !gResourceGate.sawEnrich) {
     reportResource("after-enrich");
     reportResource("before-persist");
@@ -145,6 +147,7 @@ void loop() {
   armScannerFromStation();
   gScanner.loop();
   serviceNameEnrichment(gScanner);
+  serviceDnsEnrichment(gScanner);
   serviceOuiEnrichment(gScanner);
   noteResourceMilestones(gScanner);
   gUi.loop();

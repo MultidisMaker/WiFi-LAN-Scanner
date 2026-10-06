@@ -10,6 +10,7 @@
 #include <esp_wifi.h>
 
 #include "BoardConfig.h"
+#include "DnsPtrEnricher.h"
 #include "CandidatePlan.h"
 #include "DeviceContext.h"
 #include "FakeDiscovery.h"
@@ -295,9 +296,10 @@ void hilLive() {
                           scanner.candidateCount() == gLivePlan.count && scanner.candidateCount() <= kCandidateCap;
   const uint16_t seen = scanner.observedCount();
   const uint32_t enrichStart = millis();
-  const uint32_t enrichBudget = static_cast<uint32_t>(seen) * 400u + 500u;
-  while (!nameEnrichmentIdle(scanner) && static_cast<uint32_t>(millis() - enrichStart) < enrichBudget) {
+  const uint32_t enrichBudget = static_cast<uint32_t>(seen) * 550u + 1500u;
+  while (!dnsEnrichmentIdle(scanner) && static_cast<uint32_t>(millis() - enrichStart) < enrichBudget) {
     serviceNameEnrichment(scanner);
+    serviceDnsEnrichment(scanner);
     serviceOuiEnrichment(scanner);
     delay(20);
     deviceUiLoop();
@@ -335,9 +337,10 @@ void hilLive() {
                   host->hasMac ? hostMac : "none", host->name[0] != '\0' ? host->name : "none",
                   nameSourceLabel(host->nameSource), ouiStateLabel(host->ouiState), org);
   }
-  const uint16_t queried = nameEnrichmentQueryCount();
+  const uint16_t queried = dnsEnrichmentAttemptCount();
   const uint16_t skipped = seen > queried ? static_cast<uint16_t>(seen - queried) : 0;
-  Serial.printf("WLS-HIL ENRICH queried=%u named=%u skipped=%u\n", queried, named, skipped);
+  Serial.printf("WLS-HIL ENRICH queried=%u named=%u skipped=%u dnsAttempts=%u\n", nameEnrichmentQueryCount(), named, skipped,
+                queried);
 
   reportResource("before-persist");
   const InventoryStoreResult stored = storeInventoryOnSd();
@@ -596,8 +599,9 @@ void hilNames() {
                        gHilDuplicate.at(1)->name[0] == '\0' && gHilDuplicate.at(1)->hasMac &&
                        gHilDuplicate.at(1)->mac[5] == 0x12 && ipv4Equal(gHilDuplicate.at(1)->ip, ipv4(10, 0, 0, 2));
   const bool keptOk = gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "\t\n", NameSource::Mdns) == NameApply::Rejected &&
-                      gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "aaa-lower", NameSource::ReverseDns) == NameApply::Kept &&
-                      strcmp(gHilDuplicate.at(0)->name, "printer") == 0 && gHilDuplicate.at(0)->mac[5] == 0x11;
+                      gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "aaa-lower", NameSource::ReverseDns) == NameApply::Applied &&
+                      strcmp(gHilDuplicate.at(0)->name, "aaa-lower") == 0 &&
+                      gHilDuplicate.at(0)->nameSource == NameSource::ReverseDns && gHilDuplicate.at(0)->mac[5] == 0x11;
 
   char longName[48];
   for (int i = 0; i < 47; ++i) {
@@ -607,11 +611,13 @@ void hilNames() {
   const bool clippedOk = gHilDuplicate.rememberName(ipv4(10, 0, 0, 2), longName, NameSource::Mdns) == NameApply::Applied &&
                          strlen(gHilDuplicate.at(1)->name) == 31;
   const bool precedenceOk =
-      gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "alpha", NameSource::Mdns) == NameApply::Applied &&
-      strcmp(gHilDuplicate.at(0)->name, "alpha") == 0 && gHilDuplicate.at(0)->nameSource == NameSource::Mdns;
+      gHilDuplicate.rememberName(ipv4(10, 0, 0, 1), "alpha", NameSource::Mdns) == NameApply::Kept &&
+      strcmp(gHilDuplicate.at(0)->name, "aaa-lower") == 0 && gHilDuplicate.at(0)->nameSource == NameSource::ReverseDns;
   const bool sameOk = gHilDuplicate.rememberName(ipv4(10, 0, 0, 2), "alpha", NameSource::Mdns) == NameApply::Applied &&
-                      gHilDuplicate.count() == 2 && strcmp(gHilDuplicate.at(0)->name, gHilDuplicate.at(1)->name) == 0 &&
-                      strcmp(gHilDuplicate.at(0)->name, "alpha") == 0;
+                      gHilDuplicate.count() == 2 && strcmp(gHilDuplicate.at(0)->name, "aaa-lower") == 0 &&
+                      gHilDuplicate.at(0)->nameSource == NameSource::ReverseDns &&
+                      strcmp(gHilDuplicate.at(1)->name, "alpha") == 0 &&
+                      gHilDuplicate.at(1)->nameSource == NameSource::Mdns;
 
   UiSnapshot snapshot;
   snapshot.phase = UiPhase::Hosts;
@@ -636,7 +642,8 @@ void hilNames() {
   }
   const bool uiOk = detail0 != nullptr && detail1 != nullptr && strcmp(detail0, snapshot.rowDetail[0]) == 0 &&
                     strcmp(detail1, snapshot.rowDetail[1]) == 0 && strcmp(snapshot.rowLabel[0], "10.0.0.1") == 0 &&
-                    strstr(detail0, "m:alpha ") == detail0 && strstr(detail1, "m:alpha ") == detail1;
+                    strstr(detail0, "Name: aaa-lower ") == detail0 && strstr(detail0, "02:00:00:00:00:11") != nullptr &&
+                    strstr(detail1, "Name: alpha ") == detail1 && strstr(detail1, "02:00:00:00:00:12") != nullptr;
 
   Serial.printf("WLS-HIL NAME ip=10.0.0.1 name=%s source=%s\n", gHilDuplicate.at(0)->name,
                 nameSourceLabel(gHilDuplicate.at(0)->nameSource));
@@ -711,7 +718,7 @@ void hilOui() {
   const bool uiOk = vendor[0] != nullptr && vendor[1] != nullptr && vendor[2] != nullptr && vendor[3] != nullptr &&
                     strcmp(vendor[0], "Acme Widgets") == 0 && strcmp(vendor[1], "unknown") == 0 &&
                     strcmp(vendor[2], "local") == 0 && strcmp(vendor[3], "group") == 0 && detail0 != nullptr &&
-                    strstr(detail0, "m:alpha ") == detail0;
+                    strstr(detail0, "Name: alpha ") == detail0 && strstr(detail0, "00:11:22:33:44:55") != nullptr;
   const OuiTable embedded = embeddedOuiTable();
   const bool registryOk = embedded.entries != nullptr && embedded.names != nullptr && embedded.count >= 30000u;
   Serial.printf("WLS-HIL OUI ip=10.0.0.1 class=global state=known org=%s\n",

@@ -12,6 +12,49 @@ int progressPercent(uint16_t processed, uint16_t candidates) {
   return static_cast<int>((static_cast<uint32_t>(processed) * 100u) / static_cast<uint32_t>(candidates));
 }
 
+namespace {
+
+bool textInsideOneRegion(int y, int textH) {
+  static const uint32_t kBits[] = {UiRegionHeader, UiRegionWifiActions, UiRegionNetwork, UiRegionProgress,
+                                    UiRegionLatest, UiRegionControls,    UiRegionFooter};
+  for (uint32_t bit : kBits) {
+    const UiRegionRect rect = uiRegionRect(bit);
+    if (y >= rect.y && y + textH <= rect.y + rect.h) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+bool uiHostTextY(int cardY, int cardH, int lineIndex, int textH, int* outY) {
+  if (outY == nullptr || cardH <= 0 || textH <= 0 || lineIndex < 0) {
+    return false;
+  }
+  int y = cardY + 2;
+  const int limit = cardY + cardH;
+  for (int placed = 0; placed <= lineIndex; ++placed) {
+    bool found = false;
+    while (y + textH <= limit) {
+      if (textInsideOneRegion(y, textH)) {
+        found = true;
+        break;
+      }
+      ++y;
+    }
+    if (!found) {
+      return false;
+    }
+    if (placed == lineIndex) {
+      *outY = y;
+      return true;
+    }
+    y += textH + 2;
+  }
+  return false;
+}
+
 UiRegionRect uiRegionRect(uint32_t bit) {
   switch (bit) {
     case UiRegionHeader:

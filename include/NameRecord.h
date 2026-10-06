@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Higher rank wins. ReverseDns is a precedence rank only; this firmware does not send reverse DNS.
+// Higher rank wins. A reverse-DNS PTR outranks mDNS. mDNS stays a secondary source.
 enum class NameSource : uint8_t { None = 0, ReverseDns = 1, Mdns = 2 };
 
 enum class NameApply : uint8_t { MissingHost, Rejected, Kept, Applied };
@@ -19,7 +19,7 @@ bool preferIncomingName(NameSource currentSource, const char* currentName, NameS
 
 const char* nameSourceLabel(NameSource source);
 
-// One size-1 detail line: "m:name MAC", "d:name MAC", or "u:unknown MAC unknown".
-// The visible name is clipped so the line fits the existing host row.
+// One size-1 detail line: "Name: <name-or-unknown> <MAC-or-MAC unknown>".
+// The visible name is clipped so the MAC still fits the 210 px host card.
 void formatHostDetail(char* dest, size_t destLen, NameSource source, const char* storedName, bool hasMac,
                       const uint8_t mac[6]);

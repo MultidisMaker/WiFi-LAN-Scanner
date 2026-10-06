@@ -4,8 +4,8 @@
 
 class ScannerController;
 
-// One in-flight link-local mDNS reverse PTR for a host the scanner has already observed.
-// This does not browse services and does not send reverse DNS.
+// mDNS is disabled. serviceNameEnrichment does not call MDNS.begin.
+// Reverse names come from DnsPtrEnricher after the ARP batch completes.
 void serviceNameEnrichment(ScannerController& scanner);
 bool nameEnrichmentIdle(const ScannerController& scanner);
 uint16_t nameEnrichmentQueryCount();

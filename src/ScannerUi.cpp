@@ -251,16 +251,29 @@ void paintControl(const Clip& clip, const UiControl& control, bool pressed) {
     }
   }
   int textY = control.detail[0] == '\0' ? control.y + (control.h / 2) - (single ? 8 : 4) : control.y + 8;
+  int detailY = control.id == IdProgress ? control.y + 16 : control.y + 26;
+  int vendorY = control.y + 36;
+  if (control.id >= IdRow0 && control.id < IdRow0 + 6) {
+    int placed = 0;
+    if (uiHostTextY(control.y, control.h, 0, 8, &placed)) {
+      textY = placed;
+    }
+    if (uiHostTextY(control.y, control.h, 1, 8, &placed)) {
+      detailY = placed;
+    }
+    if (uiHostTextY(control.y, control.h, 2, 8, &placed)) {
+      vendorY = placed;
+    }
+  }
   if (control.id == IdProgress) {
     textY = control.y + 4;
   }
   textClip(clip, textX, textY, size, ink, control.label);
   if (control.detail[0] != '\0') {
-    const int detailY = control.id == IdProgress ? control.y + 16 : control.y + 26;
     textClip(clip, control.x + 6, detailY, 1, ink, control.detail);
   }
   if (control.vendor[0] != '\0' && control.h >= 44 && control.id != IdProgress) {
-    textClip(clip, control.x + 6, control.y + 36, 1, ink, control.vendor);
+    textClip(clip, control.x + 6, vendorY, 1, ink, control.vendor);
   }
 }
 

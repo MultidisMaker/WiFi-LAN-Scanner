@@ -7,6 +7,7 @@
 #include "AppActions.h"
 #include "BoardConfig.h"
 #include "CandidatePlan.h"
+#include "DnsPtr.h"
 #include "FakeDiscovery.h"
 #include "HostInventory.h"
 #include "InventoryExport.h"
@@ -509,8 +510,8 @@ void test_name_sanitize_and_precedence(void) {
   TEST_ASSERT_EQUAL_CHAR('b', out[30]);
 
   TEST_ASSERT_TRUE(preferIncomingName(NameSource::None, "", NameSource::ReverseDns, "dns-name"));
-  TEST_ASSERT_FALSE(preferIncomingName(NameSource::Mdns, "printer", NameSource::ReverseDns, "aaa"));
-  TEST_ASSERT_TRUE(preferIncomingName(NameSource::ReverseDns, "dns-name", NameSource::Mdns, "zzz"));
+  TEST_ASSERT_TRUE(preferIncomingName(NameSource::Mdns, "printer", NameSource::ReverseDns, "aaa"));
+  TEST_ASSERT_FALSE(preferIncomingName(NameSource::ReverseDns, "dns-name", NameSource::Mdns, "zzz"));
   TEST_ASSERT_TRUE(preferIncomingName(NameSource::Mdns, "printer", NameSource::Mdns, "alpha"));
   TEST_ASSERT_FALSE(preferIncomingName(NameSource::Mdns, "alpha", NameSource::Mdns, "printer"));
   TEST_ASSERT_FALSE(preferIncomingName(NameSource::Mdns, "alpha", NameSource::Mdns, "alpha"));
@@ -531,8 +532,11 @@ void test_inventory_name_preserves_host_and_allows_duplicates(void) {
   TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "@@@", NameSource::Mdns) == NameApply::Rejected);
   TEST_ASSERT_EQUAL_STRING("printer", inventory.at(0)->name);
   TEST_ASSERT_TRUE(inventory.at(0)->hasMac && inventory.at(0)->mac[5] == 0x11);
-  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "aaa-lower", NameSource::ReverseDns) == NameApply::Kept);
-  TEST_ASSERT_EQUAL_STRING("printer", inventory.at(0)->name);
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "aaa-lower", NameSource::ReverseDns) == NameApply::Applied);
+  TEST_ASSERT_EQUAL_STRING("aaa-lower", inventory.at(0)->name);
+  TEST_ASSERT_TRUE(inventory.at(0)->nameSource == NameSource::ReverseDns);
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "zzz-mdns", NameSource::Mdns) == NameApply::Kept);
+  TEST_ASSERT_EQUAL_STRING("aaa-lower", inventory.at(0)->name);
 
   char longName[48];
   for (int i = 0; i < 47; ++i) {
@@ -544,17 +548,17 @@ void test_inventory_name_preserves_host_and_allows_duplicates(void) {
   TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 2), longName, NameSource::Mdns) == NameApply::Applied);
   TEST_ASSERT_EQUAL_UINT(31, strlen(inventory.at(1)->name));
 
-  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "alpha", NameSource::Mdns) == NameApply::Applied);
+  TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 1), "alpha", NameSource::Mdns) == NameApply::Kept);
   TEST_ASSERT_TRUE(inventory.rememberName(ipv4(10, 0, 0, 2), "alpha", NameSource::Mdns) == NameApply::Applied);
   TEST_ASSERT_TRUE(inventory.count() == 2);
-  TEST_ASSERT_EQUAL_STRING("alpha", inventory.at(0)->name);
+  TEST_ASSERT_EQUAL_STRING("aaa-lower", inventory.at(0)->name);
   TEST_ASSERT_EQUAL_STRING("alpha", inventory.at(1)->name);
   TEST_ASSERT_TRUE(ipv4Equal(inventory.at(0)->ip, ipv4(10, 0, 0, 1)));
   TEST_ASSERT_TRUE(ipv4Equal(inventory.at(1)->ip, ipv4(10, 0, 0, 2)));
 
   inventory.observe(ipv4(10, 0, 0, 1), EvidenceRank::Neighbor, true, macA, true, 9, 30, "fake");
   TEST_ASSERT_TRUE(inventory.count() == 2);
-  TEST_ASSERT_EQUAL_STRING("alpha", inventory.at(0)->name);
+  TEST_ASSERT_EQUAL_STRING("aaa-lower", inventory.at(0)->name);
   TEST_ASSERT_EQUAL_UINT(30, inventory.at(0)->lastSeenMs);
 
   gScanNow = 8000;
@@ -582,12 +586,12 @@ void test_ui_host_detail_with_and_without_name(void) {
   char unnamed[40];
   char named[40];
   formatHostDetail(unnamed, sizeof(unnamed), NameSource::None, "", false, nullptr);
-  TEST_ASSERT_EQUAL_STRING("u:unknown MAC unknown", unnamed);
+  TEST_ASSERT_EQUAL_STRING("Name: unknown MAC unknown", unnamed);
   formatHostDetail(named, sizeof(named), NameSource::Mdns, "alpha", true, mac);
-  TEST_ASSERT_EQUAL_STRING("m:alpha 02:11:22:33:44:55", named);
+  TEST_ASSERT_EQUAL_STRING("Name: alpha 02:11:22:33:44:55", named);
   char dnsDetail[40];
   formatHostDetail(dnsDetail, sizeof(dnsDetail), NameSource::ReverseDns, "ns-host", true, mac);
-  TEST_ASSERT_EQUAL_STRING("d:ns-host 02:11:22:33:44:55", dnsDetail);
+  TEST_ASSERT_EQUAL_STRING("Name: ns-host 02:11:22:33:44:55", dnsDetail);
 
   char stored[32];
   for (int i = 0; i < 31; ++i) {
@@ -596,7 +600,8 @@ void test_ui_host_detail_with_and_without_name(void) {
   stored[31] = '\0';
   char clipped[40];
   formatHostDetail(clipped, sizeof(clipped), NameSource::Mdns, stored, false, nullptr);
-  TEST_ASSERT_EQUAL_STRING("m:nnnnnnnnnnnnn MAC unknown", clipped);
+  TEST_ASSERT_EQUAL_STRING("Name: nnnnnnnnnnnnnnn MAC unknown", clipped);
+  TEST_ASSERT_TRUE(strlen(clipped) <= 33);
 
   UiControl controls[8];
   UiSnapshot namedRow;
@@ -614,7 +619,7 @@ void test_ui_host_detail_with_and_without_name(void) {
   for (int i = 0; i < count; ++i) {
     if (strcmp(controls[i].label, "10.0.0.1") == 0) {
       sawNamed = true;
-      TEST_ASSERT_EQUAL_STRING("m:alpha 02:11:22:33:44:55", controls[i].detail);
+      TEST_ASSERT_EQUAL_STRING("Name: alpha 02:11:22:33:44:55", controls[i].detail);
     }
   }
   UiSnapshot unknownRow;
@@ -632,7 +637,7 @@ void test_ui_host_detail_with_and_without_name(void) {
   for (int i = 0; i < count; ++i) {
     if (strcmp(controls[i].label, "10.0.0.2") == 0) {
       sawUnknown = true;
-      TEST_ASSERT_EQUAL_STRING("u:unknown MAC unknown", controls[i].detail);
+      TEST_ASSERT_EQUAL_STRING("Name: unknown MAC unknown", controls[i].detail);
     }
   }
   TEST_ASSERT_TRUE(sawNamed && sawUnknown);
@@ -2310,6 +2315,166 @@ void test_control_affordance_and_address_range(void) {
   TEST_ASSERT_TRUE(scanner.preview().count <= 256);
 }
 
+bool lineInsideCardAndRegion(int y, int textH, int cardY, int cardH) {
+  if (y < cardY || y + textH > cardY + cardH) {
+    return false;
+  }
+  static const uint32_t bits[] = {UiRegionHeader, UiRegionWifiActions, UiRegionNetwork, UiRegionProgress,
+                                   UiRegionLatest, UiRegionControls,    UiRegionFooter};
+  int hits = 0;
+  for (uint32_t bit : bits) {
+    const UiRegionRect rect = uiRegionRect(bit);
+    if (y >= rect.y && y + textH <= rect.y + rect.h) {
+      ++hits;
+    }
+  }
+  return hits == 1;
+}
+
+void test_host_card_lines_stay_in_one_region(void) {
+  for (int row = 0; row < 6; ++row) {
+    const int cardY = 40 + row * 52;
+    for (int line = 0; line < 3; ++line) {
+      int y = -1;
+      TEST_ASSERT_TRUE(uiHostTextY(cardY, 48, line, 8, &y));
+      TEST_ASSERT_TRUE(lineInsideCardAndRegion(y, 8, cardY, 48));
+    }
+  }
+  int crossed = 66;
+  TEST_ASSERT_FALSE(lineInsideCardAndRegion(crossed, 8, 40, 48));
+}
+
+void test_host_cards_do_not_share_fields(void) {
+  const uint8_t macA[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+  const uint8_t macB[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x66};
+  ObservedHost rich;
+  rich.ip = ipv4(10, 28, 100, 1);
+  rich.hasMac = true;
+  memcpy(rich.mac, macA, 6);
+  memcpy(rich.name, "printer", 8);
+  rich.nameSource = NameSource::ReverseDns;
+  rich.ouiState = OuiState::Known;
+  rich.manufacturer = "Vizio, Inc";
+  ObservedHost sparse;
+  sparse.ip = ipv4(10, 28, 100, 0);
+  sparse.hasMac = false;
+  sparse.ouiState = OuiState::None;
+  ObservedHost middle;
+  middle.ip = ipv4(10, 28, 100, 3);
+  middle.hasMac = true;
+  memcpy(middle.mac, macB, 6);
+  middle.nameSource = NameSource::None;
+  middle.ouiState = OuiState::Local;
+
+  UiSnapshot page;
+  page.phase = UiPhase::Hosts;
+  const ObservedHost* hosts[6] = {&rich, &sparse, &middle, nullptr, nullptr, nullptr};
+  for (int row = 0; row < 6; ++row) {
+    if (hosts[row] == nullptr) {
+      continue;
+    }
+    page.rowPresent[row] = true;
+    formatIpv4(hosts[row]->ip, page.rowLabel[row], sizeof(page.rowLabel[row]));
+    formatHostDetail(page.rowDetail[row], sizeof(page.rowDetail[row]), hosts[row]->nameSource, hosts[row]->name,
+                     hosts[row]->hasMac, hosts[row]->mac);
+    formatOuiLine(page.rowVendor[row], sizeof(page.rowVendor[row]), hosts[row]->ouiState, hosts[row]->manufacturer);
+  }
+  UiControl controls[8];
+  const int count = collectUiControls(controls, 8, page);
+  bool sawRich = false;
+  bool sawSparse = false;
+  bool sawMiddle = false;
+  for (int i = 0; i < count; ++i) {
+    if (strcmp(controls[i].label, "10.28.100.1") == 0) {
+      sawRich = true;
+      TEST_ASSERT_TRUE(strstr(controls[i].detail, "Name: printer ") == controls[i].detail);
+      TEST_ASSERT_TRUE(strstr(controls[i].detail, "00:11:22:33:44:55") != nullptr);
+      TEST_ASSERT_EQUAL_STRING("Vizio, Inc", controls[i].vendor);
+    } else if (strcmp(controls[i].label, "10.28.100.0") == 0) {
+      sawSparse = true;
+      TEST_ASSERT_EQUAL_STRING("Name: unknown MAC unknown", controls[i].detail);
+      TEST_ASSERT_EQUAL_STRING("", controls[i].vendor);
+    } else if (strcmp(controls[i].label, "10.28.100.3") == 0) {
+      sawMiddle = true;
+      TEST_ASSERT_TRUE(strstr(controls[i].detail, "Name: unknown ") == controls[i].detail);
+      TEST_ASSERT_TRUE(strstr(controls[i].detail, "02:11:22:33:44:66") != nullptr);
+      TEST_ASSERT_EQUAL_STRING("local", controls[i].vendor);
+      TEST_ASSERT_TRUE(strstr(controls[i].vendor, "Vizio") == nullptr);
+    }
+  }
+  TEST_ASSERT_TRUE(sawRich && sawSparse && sawMiddle);
+
+  UiSnapshot nextPage;
+  nextPage.phase = UiPhase::Hosts;
+  nextPage.rowPresent[0] = true;
+  formatIpv4(middle.ip, nextPage.rowLabel[0], sizeof(nextPage.rowLabel[0]));
+  formatHostDetail(nextPage.rowDetail[0], sizeof(nextPage.rowDetail[0]), middle.nameSource, middle.name, middle.hasMac,
+                   middle.mac);
+  formatOuiLine(nextPage.rowVendor[0], sizeof(nextPage.rowVendor[0]), middle.ouiState, middle.manufacturer);
+  const int nextCount = collectUiControls(controls, 8, nextPage);
+  bool sawPage = false;
+  for (int i = 0; i < nextCount; ++i) {
+    if (controls[i].id == IdRow0) {
+      sawPage = true;
+      TEST_ASSERT_EQUAL_STRING("10.28.100.3", controls[i].label);
+      TEST_ASSERT_EQUAL_STRING("local", controls[i].vendor);
+      TEST_ASSERT_TRUE(strstr(controls[i].detail, "Vizio") == nullptr);
+      TEST_ASSERT_TRUE(strstr(controls[i].detail, "00:11:22:33:44:55") == nullptr);
+    }
+  }
+  TEST_ASSERT_TRUE(sawPage);
+}
+
+void test_ptr_question_and_reply(void) {
+  uint8_t query[128];
+  size_t used = 0;
+  TEST_ASSERT_TRUE(buildPtrQuestion(ipv4(10, 28, 100, 1), 0x1234, query, sizeof(query), &used));
+  TEST_ASSERT_TRUE(used > 12);
+  TEST_ASSERT_EQUAL_UINT(0x12, query[0]);
+  TEST_ASSERT_EQUAL_UINT(0x34, query[1]);
+  char name[128];
+  PtrReply reply = PtrReply::Malformed;
+  uint8_t nx[used];
+  memcpy(nx, query, used);
+  nx[2] = 0x81;
+  nx[3] = 0x83;
+  TEST_ASSERT_TRUE(parsePtrReply(nx, used, 0x1234, name, sizeof(name), &reply));
+  TEST_ASSERT_TRUE(reply == PtrReply::NxDomain);
+
+  uint8_t empty[used];
+  memcpy(empty, query, used);
+  empty[2] = 0x81;
+  empty[3] = 0x80;
+  TEST_ASSERT_TRUE(parsePtrReply(empty, used, 0x1234, name, sizeof(name), &reply));
+  TEST_ASSERT_TRUE(reply == PtrReply::NoName);
+
+  uint8_t answer[160];
+  memset(answer, 0, sizeof(answer));
+  memcpy(answer, query, used);
+  answer[2] = 0x81;
+  answer[3] = 0x80;
+  answer[6] = 0x00;
+  answer[7] = 0x01;
+  size_t cursor = used;
+  answer[cursor++] = 0xC0;
+  answer[cursor++] = 0x0C;
+  answer[cursor++] = 0x00;
+  answer[cursor++] = 12;
+  answer[cursor++] = 0x00;
+  answer[cursor++] = 1;
+  cursor += 4;
+  answer[cursor++] = 0x00;
+  answer[cursor++] = 9;
+  answer[cursor++] = 7;
+  memcpy(answer + cursor, "printer", 7);
+  cursor += 7;
+  answer[cursor++] = 0;
+  TEST_ASSERT_TRUE(parsePtrReply(answer, cursor, 0x1234, name, sizeof(name), &reply));
+  TEST_ASSERT_TRUE(reply == PtrReply::Resolved);
+  TEST_ASSERT_EQUAL_STRING("printer", name);
+  TEST_ASSERT_EQUAL_STRING("resolved", ptrReplyLabel(reply));
+}
+
 static int gFailures = 0;
 
 void setup() {
@@ -2340,6 +2505,9 @@ void setup() {
   RUN_TEST(test_name_sanitize_and_precedence);
   RUN_TEST(test_inventory_name_preserves_host_and_allows_duplicates);
   RUN_TEST(test_ui_host_detail_with_and_without_name);
+  RUN_TEST(test_host_card_lines_stay_in_one_region);
+  RUN_TEST(test_host_cards_do_not_share_fields);
+  RUN_TEST(test_ptr_question_and_reply);
   RUN_TEST(test_oui_parse_classify_and_lookup);
   RUN_TEST(test_inventory_oui_preserves_host_without_table);
   RUN_TEST(test_ui_manufacturer_states);
