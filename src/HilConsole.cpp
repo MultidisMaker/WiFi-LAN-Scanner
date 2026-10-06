@@ -520,8 +520,12 @@ void hilDiscover() {
   scanner.armConnectedFacts(facts);
   scanner.start();
   bool scanOk = scanner.state() == ScanState::Starting;
-  delay(kScannerTransitionMs);
-  scanner.loop();
+  int spin = 0;
+  while (scanner.state() == ScanState::Starting && spin < 6) {
+    delay(50);
+    scanner.loop();
+    ++spin;
+  }
   scanOk = scanOk && scanner.state() == ScanState::Scanning;
 
   int guard = 0;
@@ -1055,9 +1059,9 @@ void hilRange() {
   scanner.setAutomatic();
   scanner.setLimit(256);
   RangePreview preview = scanner.preview();
-  bool pass = preview.valid && preview.count == 256 && preview.gatewayForced && preview.gatewayIncluded && preview.canNext &&
-              !preview.canPrev && ipv4Equal(preview.nextOrigin, ipv4(10, 1, 1, 1)) &&
-              ipv4Equal(preview.end, ipv4(10, 1, 5, 5));
+  bool pass = preview.valid && preview.count == 255 && !preview.gatewayForced && preview.gatewayIncluded &&
+              preview.canNext && !preview.canPrev && ipv4Equal(preview.nextOrigin, ipv4(10, 1, 1, 0)) &&
+              ipv4Equal(preview.start, ipv4(10, 1, 0, 1)) && ipv4Equal(preview.end, ipv4(10, 1, 0, 255));
   pass = pass && scanner.setLimit(64) && scanner.setCustomStart(ipv4(10, 1, 2, 10));
   preview = scanner.preview();
   pass = pass && preview.valid && preview.mode == RangeMode::Custom && preview.count == 64 && preview.limit == 64 &&
@@ -1080,11 +1084,13 @@ void hilRange() {
   scanner.setLimit(256);
   pass = pass && scanner.windowNext();
   preview = scanner.preview();
-  pass = pass && preview.mode == RangeMode::Custom && preview.count == 256 && ipv4Equal(preview.start, ipv4(10, 1, 1, 1)) &&
+  pass = pass && preview.mode == RangeMode::Automatic && preview.count == 256 &&
+         ipv4Equal(preview.start, ipv4(10, 1, 1, 0)) && ipv4Equal(preview.end, ipv4(10, 1, 1, 255)) &&
          !preview.gatewayIncluded;
   pass = pass && scanner.windowPrev();
   preview = scanner.preview();
-  pass = pass && preview.mode == RangeMode::Automatic && preview.gatewayForced && preview.count == 256 && preview.limit == 256;
+  pass = pass && preview.mode == RangeMode::Automatic && !preview.gatewayForced && preview.gatewayIncluded &&
+         preview.count == 255 && preview.limit == 256;
   scanner.setAutomatic();
   scanner.setLimit(256);
   scanner.reset();

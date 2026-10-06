@@ -128,7 +128,8 @@ bool ScannerController::windowNext() {
     return false;
   }
   AddressWindow trial = window_;
-  trial.mode = RangeMode::Custom;
+  trial.mode = armed_.usableHosts > kCandidateCap && window_.mode == RangeMode::Automatic ? RangeMode::Automatic
+                                                                                           : RangeMode::Custom;
   trial.useOrigin = true;
   trial.origin = now.nextOrigin;
   CandidatePlan plan;
@@ -150,7 +151,8 @@ bool ScannerController::windowPrev() {
     return setAutomatic();
   }
   AddressWindow trial = window_;
-  trial.mode = RangeMode::Custom;
+  trial.mode = armed_.usableHosts > kCandidateCap && window_.mode == RangeMode::Automatic ? RangeMode::Automatic
+                                                                                           : RangeMode::Custom;
   trial.useOrigin = true;
   trial.origin = now.prevOrigin;
   CandidatePlan plan;

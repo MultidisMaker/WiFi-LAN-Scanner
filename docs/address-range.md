@@ -4,13 +4,13 @@ One scan batch contains at most 256 usable IPv4 addresses. The scanner remains t
 
 ## Modes
 
-Automatic is the default. It keeps the existing low window: usable hosts from the start of the subnet, excluding the station, the network address, and the broadcast address. When more than the batch size is eligible and the gateway is outside that window, the gateway replaces the highest selected address. The displayed end is then the gateway. The next window begins at the address that was replaced, so that address is not skipped.
+Automatic is the default. On a subnet whose usable hosts fit in one batch, it keeps the low window: hosts from the start of the subnet, excluding the station, the network address, and the broadcast address. On a larger subnet it does not start at the bottom. It selects the block aligned to the address count (64, 128, or 256) that contains the station, clips that block to the real mask, and skips the station. A /16 host ending in `.0` or `.255` stays eligible when it is not the subnet network or broadcast address. If the gateway is outside that block and the batch still has room, the gateway is added and the list is sorted. It does not replace a local address. The displayed range stays the local block, so a gateway outside that block does not move the displayed end. Next and previous step to the adjacent aligned block and never leave the joined subnet. Previous from the block after the station block returns to the station block.
 
 Custom Start is an IPv4 address inside the joined subnet. The network address and the broadcast address are rejected. The station address is skipped and the batch continues at the next eligible host. A start outside the subnet is rejected and leaves the current batch unchanged. If fewer than the requested count remain before the broadcast address, the batch ends on the last eligible host and is marked clamped. It does not borrow addresses below the start.
 
 Address Count is 64, 128, or 256. The default is 256. The firmware computes the end address. A batch never exceeds 256 and never crosses the usable subnet.
 
-Next and previous move one batch inside the same subnet. Previous from the first custom window returns to Automatic. When the whole subnet fits in one batch, next and previous are hidden.
+Next and previous move one batch inside the same subnet. Previous from the first custom window returns to Automatic. On a larger subnet, Automatic next and previous stay on aligned blocks. When the whole subnet fits in one batch, next and previous are hidden.
 
 ## What is stored
 

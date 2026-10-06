@@ -283,15 +283,27 @@ void test_candidates_large_subnet_keeps_gateway(void) {
   const CandidatePlan plan =
       buildCandidatePlan(deriveNetFacts(ipv4(10, 1, 0, 9), ipv4(255, 255, 0, 0), ipv4(10, 1, 5, 5), ipv4(10, 1, 0, 1),
                                         ipv4(0, 0, 0, 0)));
-  TEST_ASSERT_TRUE(plan.valid && plan.capped && plan.count == 256 && plan.gatewayForced && plan.gatewayIncluded);
+  TEST_ASSERT_TRUE(plan.valid && plan.capped && plan.count == 255 && !plan.gatewayForced && plan.gatewayIncluded);
   TEST_ASSERT_TRUE(ipv4Equal(plan.address[0], ipv4(10, 1, 0, 1)));
   TEST_ASSERT_TRUE(ipv4Equal(plan.address[7], ipv4(10, 1, 0, 8)));
   TEST_ASSERT_TRUE(ipv4Equal(plan.address[8], ipv4(10, 1, 0, 10)));
-  TEST_ASSERT_TRUE(ipv4Equal(plan.address[255], ipv4(10, 1, 5, 5)));
+  TEST_ASSERT_TRUE(planHas(plan, ipv4(10, 1, 0, 255)));
+  TEST_ASSERT_TRUE(ipv4Equal(plan.address[plan.count - 1], ipv4(10, 1, 5, 5)));
   TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 0, 9)));
   TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 0, 0)));
-  TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 1, 1)));
+  TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 1, 0)));
   TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 255, 255)));
+
+  const CandidatePlan around =
+      buildCandidatePlan(deriveNetFacts(ipv4(10, 1, 104, 163), ipv4(255, 255, 0, 0), ipv4(10, 1, 0, 1),
+                                        ipv4(10, 1, 0, 1), ipv4(0, 0, 0, 0)));
+  TEST_ASSERT_TRUE(around.valid && around.capped && around.count == 256 && !around.gatewayForced && around.gatewayIncluded);
+  TEST_ASSERT_TRUE(ipv4Equal(around.address[0], ipv4(10, 1, 0, 1)));
+  TEST_ASSERT_TRUE(planHas(around, ipv4(10, 1, 104, 0)));
+  TEST_ASSERT_TRUE(planHas(around, ipv4(10, 1, 104, 255)));
+  TEST_ASSERT_FALSE(planHas(around, ipv4(10, 1, 104, 163)));
+  TEST_ASSERT_FALSE(planHas(around, ipv4(10, 1, 105, 0)));
+  TEST_ASSERT_TRUE(around.count <= kCandidateCap);
 }
 
 void test_candidates_reject_invalid_range(void) {
@@ -2139,12 +2151,15 @@ void test_control_affordance_and_address_range(void) {
   CandidatePlan plan;
   RangePreview preview;
   previewAddressRange(wide, automatic, plan, preview);
-  TEST_ASSERT_TRUE(preview.valid && preview.count == 256 && preview.gatewayForced && preview.canNext && !preview.canPrev);
-  TEST_ASSERT_TRUE(ipv4Equal(preview.nextOrigin, ipv4(10, 1, 1, 1)));
+  TEST_ASSERT_TRUE(preview.valid && preview.count == 255 && !preview.gatewayForced && preview.gatewayIncluded &&
+                   preview.canNext && !preview.canPrev);
+  TEST_ASSERT_TRUE(ipv4Equal(preview.start, ipv4(10, 1, 0, 1)));
+  TEST_ASSERT_TRUE(ipv4Equal(preview.end, ipv4(10, 1, 0, 255)));
+  TEST_ASSERT_TRUE(ipv4Equal(preview.nextOrigin, ipv4(10, 1, 1, 0)));
   TEST_ASSERT_TRUE(ipv4Equal(plan.address[0], ipv4(10, 1, 0, 1)));
-  TEST_ASSERT_TRUE(ipv4Equal(plan.address[255], ipv4(10, 1, 5, 5)));
+  TEST_ASSERT_TRUE(planHas(plan, ipv4(10, 1, 5, 5)));
   TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 0, 9)));
-  TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 1, 1)));
+  TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 1, 0)));
 
   AddressWindow custom;
   custom.mode = RangeMode::Custom;
@@ -2220,10 +2235,13 @@ void test_control_affordance_and_address_range(void) {
   scanner.setLimit(256);
   TEST_ASSERT_TRUE(scanner.windowNext());
   preview = scanner.preview();
-  TEST_ASSERT_TRUE(preview.mode == RangeMode::Custom && ipv4Equal(preview.start, ipv4(10, 1, 1, 1)) && !preview.gatewayIncluded);
+  TEST_ASSERT_TRUE(preview.mode == RangeMode::Automatic && preview.count == 256 &&
+                   ipv4Equal(preview.start, ipv4(10, 1, 1, 0)) && ipv4Equal(preview.end, ipv4(10, 1, 1, 255)) &&
+                   !preview.gatewayIncluded);
   TEST_ASSERT_TRUE(scanner.windowPrev());
   preview = scanner.preview();
-  TEST_ASSERT_TRUE(preview.mode == RangeMode::Automatic && preview.gatewayForced && preview.count == 256);
+  TEST_ASSERT_TRUE(preview.mode == RangeMode::Automatic && !preview.gatewayForced && preview.gatewayIncluded &&
+                   preview.count == 255 && ipv4Equal(preview.start, ipv4(10, 1, 0, 1)));
 
   scanner.setCustomStart(ipv4(10, 1, 2, 10));
   scanner.setLimit(128);

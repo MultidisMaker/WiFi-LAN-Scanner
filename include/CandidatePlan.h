@@ -3,11 +3,11 @@
 #include "NetMath.h"
 
 // Active discovery examines at most kFutureScanHostCap eligible addresses.
-// Eligible addresses are the usable hosts (network+1 through broadcast-1) except
-// the station itself. The gateway is eligible when it is one of those hosts.
-// When more than 256 are eligible, the plan keeps the 256 lowest. If the
-// gateway is eligible and sits above that window, it replaces the highest
-// selected address and the list is restored to ascending order.
+// Eligible addresses are the usable hosts except the station itself. The gateway
+// is eligible when it is one of those hosts. A subnet that fits in one batch
+// keeps its existing low window. A larger subnet uses the address-count-aligned
+// block that contains the station. The gateway is added, not substituted, when
+// that block still has room under the batch cap. The list stays ascending.
 static constexpr uint16_t kCandidateCap = 256;
 
 struct CandidatePlan {

@@ -148,11 +148,37 @@ void startQuery(const Ipv4& ip) {
   }
 }
 
+void stopMdnsWhileDiscovering() {
+  releaseSearch(nullptr, false);
+  if (!mdnsReady_) {
+    return;
+  }
+  // mdns_free stops the parser task. A hostile or partial mDNS packet otherwise
+  // panics that task inside ESP-IDF and reboots the scanner mid-batch.
+  MDNS.end();
+  mdnsReady_ = false;
+}
+
 }  // namespace
 
 void serviceNameEnrichment(ScannerController& scanner) {
+#if WLS_TEST_MODE
+  // HIL discovery runs are the ARP measurement. The same IDF parser panic
+  // (LoadProhibited in _mdns_search_find_from) rebooted a live repeat, so the
+  // test image does not start mDNS. Production still resolves names after the
+  // batch leaves the scanning states.
+  (void)scanner;
+  stopMdnsWhileDiscovering();
+  return;
+#endif
   if (WiFi.status() != WL_CONNECTED) {
     releaseSearch(nullptr, false);
+    return;
+  }
+  const ScanState phase = scanner.state();
+  if (phase == ScanState::Starting || phase == ScanState::Scanning || phase == ScanState::Paused ||
+      phase == ScanState::Stopping) {
+    stopMdnsWhileDiscovering();
     return;
   }
   if (scanner.observedCount() == 0) {
@@ -178,6 +204,10 @@ void serviceNameEnrichment(ScannerController& scanner) {
 }
 
 bool nameEnrichmentIdle(const ScannerController& scanner) {
+#if WLS_TEST_MODE
+  (void)scanner;
+  return true;
+#endif
   if (WiFi.status() != WL_CONNECTED) {
     return true;
   }

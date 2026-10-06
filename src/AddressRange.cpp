@@ -67,6 +67,102 @@ uint32_t firstEligible(uint32_t network, uint32_t broadcast, uint32_t self) {
   return cursor;
 }
 
+bool blockBounds(uint32_t aligned, uint32_t span, uint32_t network, uint32_t broadcast, uint32_t& from, uint32_t& to) {
+  if (span == 0 || aligned > 0xFFFFFFFFu - (span - 1u)) {
+    return false;
+  }
+  from = aligned <= network ? network + 1u : aligned;
+  to = aligned + span;
+  if (to > broadcast) {
+    to = broadcast;
+  }
+  return from < to;
+}
+
+bool blockHasEligible(uint32_t aligned, uint32_t span, uint32_t network, uint32_t broadcast, uint32_t self) {
+  uint32_t from = 0;
+  uint32_t to = 0;
+  if (!blockBounds(aligned, span, network, broadcast, from, to)) {
+    return false;
+  }
+  for (uint32_t cursor = from; cursor < to; ++cursor) {
+    if (cursor != self) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void markEnds(CandidatePlan& plan, RangePreview& preview);
+
+void fillAlignedWindow(const NetFacts& facts, const AddressWindow& window, CandidatePlan& plan, RangePreview& preview,
+                       uint32_t base, uint32_t network, uint32_t broadcast, uint32_t self, uint32_t gateway) {
+  const uint32_t span = window.limit;
+  const uint32_t aligned = base & ~(span - 1u);
+  uint32_t from = 0;
+  uint32_t to = 0;
+  if (!blockBounds(aligned, span, network, broadcast, from, to)) {
+    copyReason(preview, "outside");
+    return;
+  }
+  uint32_t firstLocal = 0;
+  uint32_t lastLocal = 0;
+  bool anyLocal = false;
+  for (uint32_t cursor = from; cursor < to && plan.count < window.limit && plan.count < kCandidateCap; ++cursor) {
+    if (cursor == self) {
+      continue;
+    }
+    if (!anyLocal) {
+      firstLocal = cursor;
+    }
+    lastLocal = cursor;
+    anyLocal = true;
+    plan.address[plan.count++] = unpack(cursor);
+  }
+  if (!anyLocal) {
+    copyReason(preview, "empty");
+    return;
+  }
+  uint32_t eligibleCount = facts.usableHosts;
+  if (self > network && self < broadcast && eligibleCount > 0) {
+    --eligibleCount;
+  }
+  plan.eligibleCount = eligibleCount;
+  plan.capped = eligibleCount > window.limit;
+  bool present = false;
+  if (eligible(gateway, network, broadcast, self)) {
+    for (uint16_t i = 0; i < plan.count; ++i) {
+      if (pack(plan.address[i]) == gateway) {
+        present = true;
+        break;
+      }
+    }
+    if (!present && plan.count < window.limit && plan.count < kCandidateCap) {
+      plan.address[plan.count++] = unpack(gateway);
+      sortPlan(plan);
+      present = true;
+    }
+    plan.gatewayIncluded = present;
+  }
+  preview.gatewayIncluded = plan.gatewayIncluded;
+  preview.gatewayForced = false;
+  plan.gatewayForced = false;
+  markEnds(plan, preview);
+  preview.start = unpack(firstLocal);
+  preview.end = unpack(lastLocal);
+  preview.clamped = (to < aligned + span) && plan.count < window.limit;
+  const uint32_t stationBase = self & ~(span - 1u);
+  const bool nextOk = aligned <= 0xFFFFFFFFu - span;
+  const uint32_t nextBase = nextOk ? aligned + span : aligned;
+  preview.nextOrigin = unpack(nextBase);
+  preview.canNext = nextOk && blockHasEligible(nextBase, span, network, broadcast, self);
+  const bool prevOk = aligned >= span;
+  const uint32_t prevBase = prevOk ? aligned - span : aligned;
+  preview.prevOrigin = unpack(prevBase);
+  preview.canPrev = prevOk && blockHasEligible(prevBase, span, network, broadcast, self);
+  preview.prevAutomatic = preview.canPrev && prevBase == stationBase;
+}
+
 void markEnds(CandidatePlan& plan, RangePreview& preview) {
   if (plan.count == 0) {
     return;
@@ -149,6 +245,12 @@ void previewAddressRange(const NetFacts& facts, const AddressWindow& window, Can
   const uint32_t gateway = pack(facts.gateway);
   if (broadcast <= network + 1) {
     copyReason(preview, "offline");
+    return;
+  }
+
+  if (window.mode == RangeMode::Automatic && facts.usableHosts > kCandidateCap) {
+    const uint32_t base = window.useOrigin ? pack(window.origin) : self;
+    fillAlignedWindow(facts, window, plan, preview, base, network, broadcast, self, gateway);
     return;
   }
 

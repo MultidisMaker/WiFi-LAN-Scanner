@@ -5,11 +5,11 @@
 
 #include "CandidatePlan.h"
 
-// One scan batch never exceeds 256 candidates. Automatic keeps the existing
-// low-window plan, including gateway replacement. Custom Start and later
-// windows are session state: a joined-network change drops them, because a
-// stored start address from another subnet is not safe to reuse. The batch
-// size is the only range preference that may be stored.
+// One scan batch never exceeds 256 candidates. On a subnet that fits in the
+// batch, Automatic keeps the low window. On a larger subnet, Automatic keeps
+// the aligned block around the station and steps to the next aligned block.
+// Custom Start remains session state: a joined-network change drops it. The
+// batch size is the only range preference that may be stored.
 
 enum class RangeMode : uint8_t { Automatic = 0, Custom = 1 };
 
