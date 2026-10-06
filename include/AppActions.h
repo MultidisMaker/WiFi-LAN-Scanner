@@ -28,7 +28,14 @@ enum class AppAction : uint8_t {
   CancelPassword,
   SelectRow,
   OpenSettings,
-  SetProfile
+  SetProfile,
+  OpenService,
+  OpenRange,
+  SetAutomatic,
+  SetCustom,
+  SetLimit,
+  WindowNext,
+  WindowPrev
 };
 
 enum class AppScreen : uint8_t { Home, Results, Entry, Hosts, Settings };
@@ -44,6 +51,7 @@ struct AppView {
   int resultCount = 0;
   uint16_t observedCount = 0;
   ServiceProfile profile = ServiceProfile::Common;
+  SettingsPage settingsPage = SettingsPage::Menu;
 };
 
 struct AppHooks {
@@ -93,6 +101,12 @@ struct AppState {
   // Service Scan profile token. Not a credential. The diagnostic line omits it
   // so the existing 240-byte HIL buffer stays large enough.
   char profile[12] = {};
+  // Address-range fields are not credentials. The diagnostic line omits them
+  // so the existing 240-byte HIL buffer stays large enough.
+  char rangeMode[12] = {};
+  char rangeStart[16] = {};
+  char rangeEnd[16] = {};
+  uint16_t rangeLimit = 256;
 };
 
 // Row ids 200..205 become SelectRow. Other known controls map to one action.
@@ -100,7 +114,8 @@ struct AppState {
 AppAction actionFromControl(int id, int* rowOffset);
 
 // One behavior implementation. Null Wi-Fi hooks skip those calls.
-void applyAppAction(AppAction action, AppView& view, ScannerController& scanner, const AppHooks* hooks);
+bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner, const AppHooks* hooks,
+                    const char* text = nullptr);
 
 void fillAppState(AppState& out, const AppView& view, const ScannerController& scanner, const AppWifiView& wifi,
                   ServiceProfile profile = ServiceProfile::Common);

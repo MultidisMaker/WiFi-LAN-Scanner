@@ -59,12 +59,134 @@ ScanState ScannerController::state() const { return state_; }
 
 void ScannerController::setBackend(DiscoveryBackend* backend) { backend_ = backend; }
 
+void ScannerController::holdFacts(bool hold) { factsHeld_ = hold; }
+
 void ScannerController::armConnectedFacts(const NetFacts& facts) {
+  if (factsHeld_) {
+    return;
+  }
+  const bool identityChanged = !connected_ || armed_.prefix != facts.prefix || !ipv4Equal(armed_.network, facts.network);
   connected_ = true;
   armed_ = facts;
+  // A custom start belongs to one joined subnet. Reconnecting, or joining a
+  // different network, returns to Automatic. The batch size stays.
+  if (identityChanged) {
+    window_.mode = RangeMode::Automatic;
+    window_.useOrigin = false;
+  }
+}
+
+bool ScannerController::setAutomatic() {
+  window_.mode = RangeMode::Automatic;
+  window_.useOrigin = false;
+  return true;
+}
+
+bool ScannerController::acceptsCustomStart(const Ipv4& start) const {
+  if (!connected_ || !armed_.valid || !addressLimitOk(window_.limit)) {
+    return false;
+  }
+  AddressWindow trial = window_;
+  trial.mode = RangeMode::Custom;
+  trial.useOrigin = true;
+  trial.origin = start;
+  CandidatePlan plan;
+  RangePreview preview;
+  previewAddressRange(armed_, trial, plan, preview);
+  return preview.valid;
+}
+
+bool ScannerController::setCustomStart(const Ipv4& start) {
+  if (!connected_ || !armed_.valid || !addressLimitOk(window_.limit)) {
+    return false;
+  }
+  AddressWindow trial = window_;
+  trial.mode = RangeMode::Custom;
+  trial.useOrigin = true;
+  trial.origin = start;
+  CandidatePlan plan;
+  RangePreview preview;
+  previewAddressRange(armed_, trial, plan, preview);
+  if (!preview.valid) {
+    return false;
+  }
+  window_ = trial;
+  return true;
+}
+
+bool ScannerController::setLimit(uint16_t limit) {
+  if (!addressLimitOk(limit)) {
+    return false;
+  }
+  window_.limit = limit;
+  return true;
+}
+
+bool ScannerController::windowNext() {
+  const RangePreview now = preview();
+  if (!now.valid || !now.canNext) {
+    return false;
+  }
+  AddressWindow trial = window_;
+  trial.mode = RangeMode::Custom;
+  trial.useOrigin = true;
+  trial.origin = now.nextOrigin;
+  CandidatePlan plan;
+  RangePreview next;
+  previewAddressRange(armed_, trial, plan, next);
+  if (!next.valid) {
+    return false;
+  }
+  window_ = trial;
+  return true;
+}
+
+bool ScannerController::windowPrev() {
+  const RangePreview now = preview();
+  if (!now.canPrev) {
+    return false;
+  }
+  if (now.prevAutomatic) {
+    return setAutomatic();
+  }
+  AddressWindow trial = window_;
+  trial.mode = RangeMode::Custom;
+  trial.useOrigin = true;
+  trial.origin = now.prevOrigin;
+  CandidatePlan plan;
+  RangePreview prev;
+  previewAddressRange(armed_, trial, plan, prev);
+  if (!prev.valid) {
+    return false;
+  }
+  window_ = trial;
+  return true;
+}
+
+RangePreview ScannerController::preview() const {
+  CandidatePlan plan;
+  RangePreview preview;
+  if (!connected_) {
+    preview.mode = window_.mode;
+    preview.limit = window_.limit;
+    preview.reason[0] = 'o';
+    preview.reason[1] = 'f';
+    preview.reason[2] = 'f';
+    preview.reason[3] = 'l';
+    preview.reason[4] = 'i';
+    preview.reason[5] = 'n';
+    preview.reason[6] = 'e';
+    preview.reason[7] = '\0';
+    return preview;
+  }
+  previewAddressRange(armed_, window_, plan, preview);
+  return preview;
 }
 
 void ScannerController::armDisconnected() {
+  if (factsHeld_) {
+    return;
+  }
   connected_ = false;
   armed_ = NetFacts();
 }
@@ -76,8 +198,10 @@ void ScannerController::start() {
   if (!connected_ || !armed_.valid || backend_ == nullptr) {
     return;
   }
-  buildCandidatePlanInto(plan_, armed_);
-  if (!plan_.valid || plan_.count == 0) {
+  RangePreview chosen;
+  previewAddressRange(armed_, window_, plan_, chosen);
+  if (!chosen.valid || plan_.count == 0 || plan_.count > kCandidateCap) {
+    plan_ = CandidatePlan();
     return;
   }
   inventory_.clear();

@@ -134,7 +134,7 @@ def send_frame(port, body, transcript):
     port.flush()
 
 
-def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
+def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None, gateway_ip=None):
     def exact(expected):
         return lambda line, expected=expected: line == expected
 
@@ -170,28 +170,53 @@ def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
         if not any(('"ip":"%s"' % live_ip) in line for line in transcript[start:]):
             transcript.append("! remote-results-ip")
             return False, pending
+        if not gateway_ip:
+            transcript.append("! remote-gateway")
+            return False, pending
+        custom_body = '{"v":1,"op":"ACTION","name":"custom","ip":"%s"}' % gateway_ip
         sequence = (
-            ("hosts", None),
-            ("row", '{"v":1,"op":"ACTION","name":"row","index":0}'),
-            ("back", None),
+            ("hosts", None, "pressed"),
+            ("row", '{"v":1,"op":"ACTION","name":"row","index":0}', "pressed"),
+            ("back", None, "pressed"),
+            ("settings", None, "pressed"),
+            ("service", None, "pressed"),
+            ("basic", None, ("pressed", "latchedpressed")),
+            ("detailed", None, ("pressed", "latchedpressed")),
+            ("common", None, ("pressed", "latchedpressed")),
+            ("back", None, "pressed"),
+            ("range", None, "pressed"),
+            ("count64", None, ("pressed", "latchedpressed")),
+            ("custom", custom_body, ("pressed", "latchedpressed")),
+            ("back", None, "pressed"),
+            ("back", None, "pressed"),
         )
     else:
         sequence = (
-            ("hosts", None),
-            ("next", None),
-            ("prev", None),
-            ("row", '{"v":1,"op":"ACTION","name":"row","index":0}'),
-            ("back", None),
-            ("start", None),
-            ("pause", None),
-            ("resume", None),
-            ("stop", None),
-            ("reset", None),
-            ("settings", None),
-            ("basic", None),
-            ("detailed", None),
-            ("common", None),
-            ("back", None),
+            ("hosts", None, "pressed"),
+            ("next", None, "pressed"),
+            ("prev", None, "pressed"),
+            ("row", '{"v":1,"op":"ACTION","name":"row","index":0}', "pressed"),
+            ("back", None, "pressed"),
+            ("start", None, "pressed"),
+            ("pause", None, "pressed"),
+            ("resume", None, "pressed"),
+            ("stop", None, "pressed"),
+            ("reset", None, "pressed"),
+            ("settings", None, "pressed"),
+            ("service", None, "pressed"),
+            ("basic", None, ("pressed", "latchedpressed")),
+            ("detailed", None, ("pressed", "latchedpressed")),
+            ("common", None, ("pressed", "latchedpressed")),
+            ("back", None, "pressed"),
+            ("range", None, "pressed"),
+            ("count64", None, ("pressed", "latchedpressed")),
+            ("custom", '{"v":1,"op":"ACTION","name":"custom","ip":"10.1.2.10"}', ("pressed", "latchedpressed")),
+            ("windownext", None, "pressed"),
+            ("windowprev", None, "pressed"),
+            ("automatic", None, ("pressed", "latchedpressed")),
+            ("count256", None, ("pressed", "latchedpressed")),
+            ("back", None, "pressed"),
+            ("back", None, "pressed"),
         )
 
     def remote_action(name, body=None, face="pressed"):
@@ -211,7 +236,7 @@ def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
             got, pending = read_until(
                 port,
                 lambda line, fired=fired: line == fired,
-                2,
+                8,
                 transcript,
                 secret=secret,
                 pending=pending,
@@ -235,8 +260,8 @@ def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
         transcript.append("! remote-scan-wait " + ",".join(tokens))
         return False
 
-    for name, body in sequence:
-        if not remote_action(name, body):
+    for name, body, face in sequence:
+        if not remote_action(name, body, face):
             return False, pending
 
     if live_ip is not None:
@@ -256,9 +281,21 @@ def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
             return False, pending
         if not wait_scan(("COMPLETE", "IDLE"), 15):
             return False, pending
-        for name in ("settings", "basic", "detailed", "common", "back"):
-            profile_face = ("pressed", "latchedpressed") if name in ("basic", "common", "detailed") else "pressed"
-            if not remote_action(name, face=profile_face):
+        restore = (
+            ("settings", None, "pressed"),
+            ("range", None, "pressed"),
+            ("automatic", None, ("pressed", "latchedpressed")),
+            ("count256", None, ("pressed", "latchedpressed")),
+            ("back", None, "pressed"),
+            ("back", None, "pressed"),
+            ("settings", None, "pressed"),
+            ("service", None, "pressed"),
+            ("common", None, ("pressed", "latchedpressed")),
+            ("back", None, "pressed"),
+            ("back", None, "pressed"),
+        )
+        for name, body, face in restore:
+            if not remote_action(name, body, face):
                 return False, pending
 
     if live_ip is None:
@@ -419,6 +456,13 @@ def run_hil(port, transcript):
             transcript.append("! sdprobe " + got)
             return False
         transcript.append("SD_HIL=stored")
+    transcript.append("> RANGE")
+    port.write(b"RANGE\n")
+    port.flush()
+    ranged = wait_for(port, lambda line: line == "WLS-HIL RANGE pass=1", 8, transcript)
+    if ranged != "WLS-HIL RANGE pass=1":
+        transcript.append("! range")
+        return False
     remote_ok, _pending = exercise_remote(port, transcript)
     if not remote_ok or contains_legacy_scan_dir(transcript):
         if contains_legacy_scan_dir(transcript):
@@ -614,6 +658,7 @@ def run_live(port, transcript, from_stdin):
     persist_path = False
     persist_stored = False
     observed_ip = None
+    gateway_ip = None
     seen = 0
     for line in transcript:
         tokens = line.split()
@@ -626,6 +671,8 @@ def run_live(port, transcript, from_stdin):
                     number = token.split("=", 1)[1]
                     if number.isdigit() and 1 <= int(number) <= 256:
                         net_ok = True
+                if token.startswith("gw=") and token.count(".") == 3:
+                    gateway_ip = token.split("=", 1)[1]
         if line.startswith("WLS-HIL HOST "):
             for token in tokens:
                 if token.startswith("ip=") and token != "ip=none" and observed_ip is None:
@@ -638,10 +685,12 @@ def run_live(port, transcript, from_stdin):
             for token in tokens:
                 if token.startswith("seen=") and token.split("=", 1)[1].isdigit():
                     seen = int(token.split("=", 1)[1])
-    if not net_ok or not persist_path or not persist_stored or observed_ip is None or seen < 1:
+    if not net_ok or not persist_path or not persist_stored or observed_ip is None or gateway_ip is None or seen < 1:
         transcript.append("! live-before-remote")
         return False
-    remote_ok, pending = exercise_remote(port, transcript, pending=pending, live_ip=observed_ip, secret=psk)
+    remote_ok, pending = exercise_remote(
+        port, transcript, pending=pending, live_ip=observed_ip, secret=psk, gateway_ip=gateway_ip
+    )
     if not remote_ok:
         return False
     transcript.append("> LIVECLOSE")

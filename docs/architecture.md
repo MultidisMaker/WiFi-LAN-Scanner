@@ -30,7 +30,7 @@ Saved credentials go to ESP32 Preferences namespace `wlan` under keys `ssid` and
 
 A non-contiguous mask, or a prefix outside 1..30, is reported as an unavailable range. The scanner does not assume `/24`. It refuses to start when Wi-Fi is disconnected or the range is invalid.
 
-`buildCandidatePlan` in `src/CandidatePlan.cpp` selects who may be probed. Eligible addresses are the usable hosts, excluding the network address, the broadcast address, and the station itself. The gateway is eligible when it is one of those hosts. The plan never walks a huge subnet: it keeps at most 256 addresses (`kFutureScanHostCap`). When more hosts are eligible, it keeps the 256 lowest. If the gateway is eligible and lies above that window, the gateway replaces the highest selected address and the list is sorted ascending again.
+`buildCandidatePlan` in `src/CandidatePlan.cpp` selects who may be probed. Eligible addresses are the usable hosts, excluding the network address, the broadcast address, and the station itself. The gateway is eligible when it is one of those hosts. The plan never walks a huge subnet: it keeps at most 256 addresses (`kFutureScanHostCap`). When more hosts are eligible, it keeps the 256 lowest. If the gateway is eligible and lies above that window, the gateway replaces the highest selected address and the list is sorted ascending again. That first window is Address Range Automatic. A custom start or a next window stays inside the same joined subnet, still at most 256 addresses, and is not reused after the joined network changes. Only the batch size, 64, 128, or 256, is stored. See `docs/address-range.md`.
 
 ## Local discovery
 

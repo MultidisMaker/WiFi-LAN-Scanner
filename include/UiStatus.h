@@ -18,5 +18,10 @@ bool formatScanCard(char* out, size_t cap, ScanState state, bool stationReady, u
 // Full persistence sentence, including the logical path when a file was stored.
 bool formatPersistStatus(char* out, size_t cap, const InventoryStoreResult& result);
 
-// One size-1 panel line. Stored results keep the canonical directory visible.
+// One size-1 panel line. A stored file says SD Saved and does not claim a mount
+// that has not been proven. The full path stays on formatPersistStatus.
 bool formatPersistPanel(char* out, size_t cap, const InventoryStoreResult& result);
+
+// Home progress and device lines. "Addresses 256/256" fits a 22-character label.
+bool formatAddressProgressLabel(char* out, size_t cap, uint16_t processed, uint16_t candidates);
+bool formatDevicesFoundLabel(char* out, size_t cap, uint16_t observed);

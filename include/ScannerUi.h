@@ -14,7 +14,8 @@ class ScannerUi {
   void loop();
   void captureState(AppState& out) const;
   // Touch dispatch and USB Remote both end here. Remote cannot inject keystrokes.
-  bool applyRemote(AppAction action, int rowOffset);
+  // text carries a custom start address. Null opens the on-device editor.
+  bool applyRemote(AppAction action, int rowOffset, const char* text = nullptr);
   bool remoteApplyWasBusy() const { return remoteBusy_; }
 
  private:
@@ -24,11 +25,15 @@ class ScannerUi {
   ActionAck remoteAck_;
   AppAction pendingAction_ = AppAction::None;
   int pendingRow_ = -1;
+  char pendingText_[16] = {};
+  bool pendingTextSet_ = false;
   bool remoteBusy_ = false;
   int page_ = 0;
   int keyboardPage_ = 0;
   bool showingHosts_ = false;
   bool showingSettings_ = false;
+  SettingsPage settingsPage_ = SettingsPage::Menu;
+  char editText_[16] = {};
   ServiceProfile profile_ = ServiceProfile::Common;
   bool drawnValid_ = false;
   UiPaintFrame drawn_{};
@@ -44,6 +49,6 @@ class ScannerUi {
   int hitControl(int x, int y) const;
   void dispatch(int id);
   void noteTouch(const char* event, int id, int x, int y, bool includePoint);
-  bool executeRemote(AppAction action, int rowOffset);
+  bool executeRemote(AppAction action, int rowOffset, const char* text);
   void serviceRemoteAck(uint32_t nowMs);
 };

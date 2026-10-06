@@ -61,7 +61,8 @@ uint32_t dirtyRegions(const UiPaintFrame& prev, const UiPaintFrame& next) {
   if ((next.screen == UiPaintScreen::Hosts || next.screen == UiPaintScreen::Results) && prev.listStamp != next.listStamp) {
     return UiRegionAll;
   }
-  if (next.screen == UiPaintScreen::Settings && prev.profile != next.profile) {
+  if (next.screen == UiPaintScreen::Settings &&
+      (prev.profile != next.profile || prev.listStamp != next.listStamp)) {
     return UiRegionAll;
   }
 

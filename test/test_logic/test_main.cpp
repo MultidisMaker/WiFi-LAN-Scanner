@@ -829,7 +829,7 @@ static void rememberPick(void* context, int index) {
 static void act(ScannerController& scanner, AppView& view, bool viaControl, int id, AppAction direct, const AppHooks* hooks) {
   int row = -1;
   const AppAction chosen = viaControl ? actionFromControl(id, &row) : direct;
-  if (chosen == AppAction::SelectRow || chosen == AppAction::SetProfile) {
+  if (chosen == AppAction::SelectRow || chosen == AppAction::SetProfile || chosen == AppAction::SetLimit) {
     view.rowOffset = row;
   }
   applyAppAction(chosen, view, scanner, hooks);
@@ -1173,26 +1173,26 @@ void test_ui_scan_and_persist_copy(void) {
   char panel[48];
   char full[96];
   TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), fresh));
-  TEST_ASSERT_EQUAL_STRING("SD not written", full);
+  TEST_ASSERT_EQUAL_STRING("No save yet", full);
   TEST_ASSERT_TRUE(formatPersistPanel(panel, sizeof(panel), fresh));
-  TEST_ASSERT_EQUAL_STRING("SD not written", panel);
+  TEST_ASSERT_EQUAL_STRING("No save yet", panel);
 
   InventoryStoreResult unavailable;
   unavailable.detail = "contract-unproven";
   TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), unavailable));
-  TEST_ASSERT_EQUAL_STRING("SD unavailable", full);
+  TEST_ASSERT_EQUAL_STRING("No save yet", full);
 
   InventoryStoreResult absent;
   absent.status = InventoryStoreStatus::Absent;
   absent.detail = "media-absent";
   TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), absent));
-  TEST_ASSERT_EQUAL_STRING("SD absent", full);
+  TEST_ASSERT_EQUAL_STRING("No SD", full);
 
   InventoryStoreResult failed;
   failed.status = InventoryStoreStatus::Failed;
   failed.detail = "write";
   TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), failed));
-  TEST_ASSERT_EQUAL_STRING("SD error", full);
+  TEST_ASSERT_EQUAL_STRING("Save failed", full);
 
   InventoryStoreResult stored;
   stored.status = InventoryStoreStatus::Stored;
@@ -1201,7 +1201,7 @@ void test_ui_scan_and_persist_copy(void) {
   TEST_ASSERT_TRUE(formatPersistStatus(full, sizeof(full), stored));
   TEST_ASSERT_EQUAL_STRING("SD stored /WiFi-LAN-Scanner/scans/scan-00000001.csv", full);
   TEST_ASSERT_TRUE(formatPersistPanel(panel, sizeof(panel), stored));
-  TEST_ASSERT_EQUAL_STRING("Stored /WiFi-LAN-Scanner/scans/", panel);
+  TEST_ASSERT_EQUAL_STRING("SD Saved", panel);
   TEST_ASSERT_TRUE(strlen(panel) <= 34);
   TEST_ASSERT_TRUE(strlen(panel) < strlen(full));
 }
@@ -1218,7 +1218,7 @@ struct RemoteWorld {
   bool haveState = false;
 };
 
-static bool worldApply(void* context, AppAction action, int rowOffset) {
+static bool worldApply(void* context, AppAction action, int rowOffset, const char* text) {
   auto* world = static_cast<RemoteWorld*>(context);
   if (world == nullptr || world->scanner == nullptr || world->view == nullptr) {
     return false;
@@ -1226,11 +1226,10 @@ static bool worldApply(void* context, AppAction action, int rowOffset) {
   world->applies += 1;
   world->last = action;
   world->lastRow = rowOffset;
-  if (action == AppAction::SelectRow || action == AppAction::SetProfile) {
+  if (action == AppAction::SelectRow || action == AppAction::SetProfile || action == AppAction::SetLimit) {
     world->view->rowOffset = rowOffset;
   }
-  applyAppAction(action, *world->view, *world->scanner, nullptr);
-  return true;
+  return applyAppAction(action, *world->view, *world->scanner, nullptr, text);
 }
 
 static void worldLoad(void* context, AppState* out) {
@@ -1741,10 +1740,11 @@ void test_remote_visual_ack_matches_touch_face(void) {
 static bool gRejectBusy = false;
 static int gBusyApplies = 0;
 
-static bool busyApply(void* context, AppAction action, int rowOffset) {
+static bool busyApply(void* context, AppAction action, int rowOffset, const char* text) {
   (void)context;
   (void)action;
   (void)rowOffset;
+  (void)text;
   gBusyApplies++;
   return !gRejectBusy;
 }
@@ -1870,6 +1870,7 @@ void test_settings_and_service_profile(void) {
 
   UiSnapshot settings;
   settings.phase = UiPhase::Settings;
+  settings.settingsPage = SettingsPage::Service;
   settings.profile = ServiceProfile::Common;
   UiControl controls[8];
   int count = collectUiControls(controls, 8, settings);
@@ -1906,6 +1907,14 @@ void test_settings_and_service_profile(void) {
   settingsView.resultsOpen = true;
   act(scanner, settingsView, true, IdBack, AppAction::Back, &hooks);
   TEST_ASSERT_TRUE(!settingsView.showingSettings && settingsView.page == 0);
+  TEST_ASSERT_TRUE(nav.closes == 0 && nav.cancels == 0);
+
+  AppView servicePage;
+  servicePage.showingSettings = true;
+  servicePage.settingsPage = SettingsPage::Service;
+  servicePage.resultsOpen = true;
+  act(scanner, servicePage, true, IdBack, AppAction::Back, &hooks);
+  TEST_ASSERT_TRUE(servicePage.showingSettings && servicePage.settingsPage == SettingsPage::Menu);
   TEST_ASSERT_TRUE(nav.closes == 0 && nav.cancels == 0);
 
   AppView blocked;
@@ -1962,6 +1971,8 @@ void test_settings_and_service_profile(void) {
   int n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_STATE\"}", out, static_cast<int>(sizeof(out)));
   TEST_ASSERT_TRUE(n > 0 && n < 576);
   TEST_ASSERT_TRUE(strstr(out, "\"profile\":\"common\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "\"range\":\"automatic\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "\"rangeLimit\":256") != nullptr);
   TEST_ASSERT_TRUE(strstr(out, "\"screen\":\"home\"") != nullptr);
   TEST_ASSERT_TRUE(strstr(out, "\"ack\":\"\"") != nullptr);
   TEST_ASSERT_TRUE(strstr(out, "password") == nullptr);
@@ -1990,6 +2001,295 @@ void test_resource_line_injected(void) {
   TEST_ASSERT_TRUE(strcmp(line, "WLS resource phase=boot heap=1000 min=800 block=700 psram=8388608 freePsram=7000000 minPsram=6900000") == 0);
   TEST_ASSERT_TRUE(formatResourceLine(line, static_cast<int>(sizeof(line)), "bad phase", sample) > 0);
   TEST_ASSERT_TRUE(strstr(line, "phase=badphase") != nullptr);
+}
+
+static NetFacts slash16Facts() {
+  return deriveNetFacts(ipv4(10, 1, 0, 9), ipv4(255, 255, 0, 0), ipv4(10, 1, 5, 5), ipv4(10, 1, 0, 1), ipv4(0, 0, 0, 0));
+}
+
+void test_control_affordance_and_address_range(void) {
+  char label[22];
+  TEST_ASSERT_TRUE(formatAddressProgressLabel(label, sizeof(label), 256, 256));
+  TEST_ASSERT_EQUAL_STRING("Addresses 256/256", label);
+  TEST_ASSERT_TRUE(strlen(label) <= 21);
+  TEST_ASSERT_TRUE(formatDevicesFoundLabel(label, sizeof(label), 3));
+  TEST_ASSERT_EQUAL_STRING("Devices found 3", label);
+
+  UiSnapshot home;
+  home.phase = UiPhase::Home;
+  home.showDashboard = true;
+  home.scan = ScanState::Idle;
+  const UiGesture progressTap = playTap(home, 100, 260, 40, 80);
+  TEST_ASSERT_TRUE(progressTap.hitId < 0);
+  UiControl controls[40];
+  int count = collectUiControls(controls, 40, home);
+  bool progressChrome = false;
+  bool newestChrome = false;
+  for (int i = 0; i < count; ++i) {
+    if (controls[i].id == IdProgress) {
+      progressChrome = controls[i].chrome;
+    }
+    if (controls[i].id == IdNewest) {
+      newestChrome = controls[i].chrome;
+    }
+  }
+  TEST_ASSERT_TRUE(progressChrome && newestChrome);
+
+  UiSnapshot rows;
+  rows.phase = UiPhase::Results;
+  rows.rowPresent[0] = true;
+  rows.rowSelected[0] = true;
+  snprintf(rows.rowLabel[0], sizeof(rows.rowLabel[0]), "Office");
+  snprintf(rows.rowDetail[0], sizeof(rows.rowDetail[0]), "SEC -40 dBm");
+  count = collectUiControls(controls, 40, rows);
+  bool sawRow = false;
+  for (int i = 0; i < count; ++i) {
+    if (controls[i].id == IdRow0) {
+      sawRow = true;
+      TEST_ASSERT_TRUE(controls[i].x == 6 && controls[i].y == 40 && controls[i].w == 210 && controls[i].h == 48);
+      TEST_ASSERT_TRUE(controls[i].latched && !controls[i].chrome);
+    }
+  }
+  TEST_ASSERT_TRUE(sawRow);
+
+  UiSnapshot keys;
+  keys.phase = UiPhase::Password;
+  keys.shift = true;
+  count = collectUiControls(controls, 40, keys);
+  int keycaps = 0;
+  bool shiftOk = false;
+  bool pageOk = false;
+  bool delOk = false;
+  bool okPrimary = false;
+  bool closeCancel = false;
+  for (int i = 0; i < count; ++i) {
+    if (controls[i].id >= IdKeyBase && controls[i].id < IdRow0) {
+      ++keycaps;
+      TEST_ASSERT_TRUE(controls[i].label[0] != '\0' && controls[i].label[1] == '\0');
+      TEST_ASSERT_TRUE(!controls[i].chrome);
+    }
+    if (controls[i].id == IdShift) {
+      shiftOk = controls[i].latched && controls[i].secondary && !controls[i].cancel;
+    }
+    if (controls[i].id == IdPage) {
+      pageOk = controls[i].secondary && !controls[i].cancel;
+    }
+    if (controls[i].id == IdDel) {
+      delOk = controls[i].secondary && !controls[i].cancel;
+    }
+    if (controls[i].id == IdOk) {
+      okPrimary = !controls[i].secondary && !controls[i].cancel && !controls[i].chrome;
+    }
+    if (controls[i].id == IdClose) {
+      closeCancel = controls[i].cancel && !controls[i].secondary;
+    }
+  }
+  TEST_ASSERT_TRUE(keycaps > 0 && shiftOk && pageOk && delOk && okPrimary && closeCancel);
+  TEST_ASSERT_TRUE(IdShift == 10 && IdRow0 == 200);
+
+  UiSnapshot menu;
+  menu.phase = UiPhase::Settings;
+  menu.settingsPage = SettingsPage::Menu;
+  count = collectUiControls(controls, 40, menu);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::OpenService, -1, controls, count) == IdOpenService);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::OpenRange, -1, controls, count) == IdOpenRange);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::SetProfile, 1, controls, count) == -1);
+  for (int i = 0; i < count; ++i) {
+    if (controls[i].id == IdOpenService) {
+      TEST_ASSERT_TRUE(controls[i].x == 8 && controls[i].y == 78 && controls[i].w == 206 && controls[i].h == 56);
+      TEST_ASSERT_TRUE(controls[i].secondary && !controls[i].chrome);
+    }
+    if (controls[i].id == IdBack) {
+      TEST_ASSERT_TRUE(controls[i].y == 410 && controls[i].w == 210 && controls[i].h == 40);
+    }
+  }
+
+  UiSnapshot editor;
+  editor.phase = UiPhase::Settings;
+  editor.settingsPage = SettingsPage::Edit;
+  count = collectUiControls(controls, 40, editor);
+  bool sawDigit = false;
+  bool sawLowBack = false;
+  for (int i = 0; i < count; ++i) {
+    if (controls[i].id == IdKeyBase) {
+      sawDigit = controls[i].x == 8 && controls[i].y == 78 && controls[i].label[0] == '1';
+    }
+    if (controls[i].id == IdBack && controls[i].y == 410) {
+      sawLowBack = true;
+    }
+  }
+  TEST_ASSERT_TRUE(sawDigit && !sawLowBack);
+
+  ScannerController scanner;
+  AppView editView;
+  editView.showingSettings = true;
+  editView.settingsPage = SettingsPage::Edit;
+  editView.resultsOpen = true;
+  NavTrace nav{0, 0, 0, "home"};
+  AppHooks hooks;
+  hooks.closeResults = navClose;
+  hooks.cancelPassword = navCancel;
+  hooks.context = &nav;
+  act(scanner, editView, true, IdBack, AppAction::Back, &hooks);
+  TEST_ASSERT_TRUE(editView.showingSettings && editView.settingsPage == SettingsPage::Range);
+  TEST_ASSERT_TRUE(nav.closes == 0 && nav.cancels == 0);
+
+  const NetFacts wide = slash16Facts();
+  AddressWindow automatic;
+  CandidatePlan plan;
+  RangePreview preview;
+  previewAddressRange(wide, automatic, plan, preview);
+  TEST_ASSERT_TRUE(preview.valid && preview.count == 256 && preview.gatewayForced && preview.canNext && !preview.canPrev);
+  TEST_ASSERT_TRUE(ipv4Equal(preview.nextOrigin, ipv4(10, 1, 1, 1)));
+  TEST_ASSERT_TRUE(ipv4Equal(plan.address[0], ipv4(10, 1, 0, 1)));
+  TEST_ASSERT_TRUE(ipv4Equal(plan.address[255], ipv4(10, 1, 5, 5)));
+  TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 0, 9)));
+  TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 1, 1)));
+
+  AddressWindow custom;
+  custom.mode = RangeMode::Custom;
+  custom.useOrigin = true;
+  custom.limit = 64;
+  custom.origin = ipv4(10, 1, 2, 10);
+  previewAddressRange(wide, custom, plan, preview);
+  TEST_ASSERT_TRUE(preview.valid && preview.count == 64 && !preview.clamped && preview.canNext && preview.canPrev);
+  TEST_ASSERT_TRUE(ipv4Equal(preview.start, ipv4(10, 1, 2, 10)));
+  TEST_ASSERT_TRUE(ipv4Equal(preview.end, ipv4(10, 1, 2, 73)));
+  TEST_ASSERT_FALSE(preview.gatewayIncluded);
+
+  custom.limit = 128;
+  previewAddressRange(wide, custom, plan, preview);
+  TEST_ASSERT_TRUE(preview.valid && preview.count == 128 && preview.count <= kCandidateCap);
+  custom.limit = 256;
+  previewAddressRange(wide, custom, plan, preview);
+  TEST_ASSERT_TRUE(preview.valid && preview.count == 256);
+
+  custom.origin = ipv4(10, 2, 0, 1);
+  previewAddressRange(wide, custom, plan, preview);
+  TEST_ASSERT_TRUE(!preview.valid && strcmp(preview.reason, "outside") == 0 && plan.count == 0);
+  custom.origin = ipv4(10, 1, 0, 0);
+  previewAddressRange(wide, custom, plan, preview);
+  TEST_ASSERT_TRUE(!preview.valid && strcmp(preview.reason, "outside") == 0);
+  custom.origin = ipv4(10, 1, 255, 255);
+  previewAddressRange(wide, custom, plan, preview);
+  TEST_ASSERT_TRUE(!preview.valid && strcmp(preview.reason, "outside") == 0);
+
+  custom.origin = ipv4(10, 1, 0, 9);
+  custom.limit = 64;
+  previewAddressRange(wide, custom, plan, preview);
+  TEST_ASSERT_TRUE(preview.valid && ipv4Equal(preview.start, ipv4(10, 1, 0, 10)));
+  TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 0, 9)));
+
+  custom.origin = ipv4(10, 1, 255, 200);
+  custom.limit = 256;
+  previewAddressRange(wide, custom, plan, preview);
+  TEST_ASSERT_TRUE(preview.valid && preview.clamped && preview.count == 55 && preview.count <= 256);
+  TEST_ASSERT_TRUE(ipv4Equal(preview.end, ipv4(10, 1, 255, 254)));
+  TEST_ASSERT_FALSE(planHas(plan, ipv4(10, 1, 255, 199)));
+
+  const CandidatePlan slash24 = buildCandidatePlan(lan24());
+  TEST_ASSERT_TRUE(slash24.valid && slash24.count == 253 && slash24.gatewayIncluded && !slash24.gatewayForced);
+  const CandidatePlan slash28 =
+      buildCandidatePlan(deriveNetFacts(ipv4(10, 0, 0, 5), ipv4(255, 255, 255, 240), ipv4(10, 0, 0, 1),
+                                        ipv4(10, 0, 0, 1), ipv4(0, 0, 0, 0)));
+  TEST_ASSERT_TRUE(slash28.valid && slash28.count == 13 && slash28.gatewayIncluded);
+
+  Ipv4 parsed;
+  TEST_ASSERT_TRUE(parseIpv4("10.1.2.10", parsed) && ipv4Equal(parsed, ipv4(10, 1, 2, 10)));
+  TEST_ASSERT_FALSE(parseIpv4("10.1.2", parsed));
+  TEST_ASSERT_FALSE(parseIpv4("10.1.2.10 ", parsed));
+  TEST_ASSERT_FALSE(parseIpv4("10.1.2.256", parsed));
+  TEST_ASSERT_FALSE(addressLimitOk(0));
+  TEST_ASSERT_FALSE(addressLimitOk(512));
+  TEST_ASSERT_TRUE(addressLimitOk(64) && addressLimitOk(128) && addressLimitOk(256));
+
+  scanner.armConnectedFacts(wide);
+  TEST_ASSERT_TRUE(scanner.setLimit(64));
+  TEST_ASSERT_TRUE(scanner.setCustomStart(ipv4(10, 1, 2, 10)));
+  TEST_ASSERT_FALSE(scanner.setCustomStart(ipv4(10, 2, 0, 1)));
+  preview = scanner.preview();
+  TEST_ASSERT_TRUE(preview.mode == RangeMode::Custom && ipv4Equal(preview.start, ipv4(10, 1, 2, 10)) && preview.limit == 64);
+  TEST_ASSERT_TRUE(scanner.windowNext());
+  preview = scanner.preview();
+  TEST_ASSERT_TRUE(preview.count <= 256 && ipv4Equal(preview.start, ipv4(10, 1, 2, 74)));
+  TEST_ASSERT_TRUE(preview.end.octet[0] == 10 && preview.end.octet[1] == 1);
+  TEST_ASSERT_TRUE(scanner.windowPrev());
+  preview = scanner.preview();
+  TEST_ASSERT_TRUE(ipv4Equal(preview.start, ipv4(10, 1, 2, 10)));
+  scanner.setAutomatic();
+  scanner.setLimit(256);
+  TEST_ASSERT_TRUE(scanner.windowNext());
+  preview = scanner.preview();
+  TEST_ASSERT_TRUE(preview.mode == RangeMode::Custom && ipv4Equal(preview.start, ipv4(10, 1, 1, 1)) && !preview.gatewayIncluded);
+  TEST_ASSERT_TRUE(scanner.windowPrev());
+  preview = scanner.preview();
+  TEST_ASSERT_TRUE(preview.mode == RangeMode::Automatic && preview.gatewayForced && preview.count == 256);
+
+  scanner.setCustomStart(ipv4(10, 1, 2, 10));
+  scanner.setLimit(128);
+  scanner.armConnectedFacts(wide);
+  preview = scanner.preview();
+  TEST_ASSERT_TRUE(preview.mode == RangeMode::Custom && preview.limit == 128);
+  scanner.armDisconnected();
+  scanner.armConnectedFacts(wide);
+  preview = scanner.preview();
+  TEST_ASSERT_TRUE(preview.mode == RangeMode::Automatic && preview.limit == 128);
+  scanner.armConnectedFacts(lan24());
+  preview = scanner.preview();
+  TEST_ASSERT_TRUE(preview.mode == RangeMode::Automatic && preview.limit == 128 && preview.count == 128 &&
+                   preview.gatewayIncluded);
+  TEST_ASSERT_TRUE(scanner.setLimit(256));
+  preview = scanner.preview();
+  TEST_ASSERT_TRUE(preview.count == 253 && preview.limit == 256 && preview.gatewayIncluded && !preview.gatewayForced);
+
+  AppView rangeView;
+  rangeView.showingSettings = true;
+  rangeView.settingsPage = SettingsPage::Range;
+  act(scanner, rangeView, true, IdCount64, AppAction::SetLimit, &hooks);
+  TEST_ASSERT_TRUE(scanner.preview().limit == 64);
+  act(scanner, rangeView, true, IdRangeAuto, AppAction::SetAutomatic, &hooks);
+  TEST_ASSERT_TRUE(scanner.preview().mode == RangeMode::Automatic);
+
+  RemoteWorld world;
+  world.scanner = &scanner;
+  world.view = &rangeView;
+  RemoteSession session;
+  char out[640];
+  requireHello(session, world);
+  int n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"custom\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"custom\",\"ok\":0}\n", out);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"custom\",\"ip\":\"10.9.9.9\"}", out,
+                  static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"custom\",\"ok\":0}\n", out);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"count64\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"count64\",\"ok\":1}\n", out);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"custom\",\"ip\":\"192.168.0.40\"}", out,
+                  static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"custom\",\"ok\":1}\n", out);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_STATE\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(n > 0 && n < 576);
+  TEST_ASSERT_TRUE(strstr(out, "\"range\":\"custom\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "\"rangeStart\":\"192.168.0.40\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "\"rangeLimit\":64") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "password") == nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "psk") == nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "passphrase") == nullptr);
+  char line[240];
+  AppState state;
+  AppWifiView wifi;
+  wifi.phase = "connected";
+  wifi.ssid = "TFMiddle";
+  fillAppState(state, rangeView, scanner, wifi, ServiceProfile::Common);
+  TEST_ASSERT_TRUE(formatAppStateLine(line, static_cast<int>(sizeof(line)), state) > 0);
+  TEST_ASSERT_TRUE(strstr(line, "range") == nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "password") == nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "psk") == nullptr);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"automatic\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"automatic\",\"ok\":1}\n", out);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"count256\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"count256\",\"ok\":1}\n", out);
+  TEST_ASSERT_TRUE(scanner.preview().mode == RangeMode::Automatic && scanner.preview().limit == 256);
+  TEST_ASSERT_TRUE(scanner.preview().count <= 256);
 }
 
 static int gFailures = 0;
@@ -2036,6 +2336,7 @@ void setup() {
   RUN_TEST(test_remote_visual_ack_matches_touch_face);
   RUN_TEST(test_dirty_regions_and_progress);
   RUN_TEST(test_settings_and_service_profile);
+  RUN_TEST(test_control_affordance_and_address_range);
   RUN_TEST(test_remote_action_busy_result);
   RUN_TEST(test_resource_line_injected);
   gFailures = UNITY_END();

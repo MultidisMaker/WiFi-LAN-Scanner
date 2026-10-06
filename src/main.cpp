@@ -132,6 +132,15 @@ void setup() {
 }
 
 void loop() {
+#if WLS_TEST_MODE
+  static uint32_t hilBeatMs = 0;
+  const uint32_t hilNow = millis();
+  if (hilBeatMs == 0 || hilNow - hilBeatMs >= 1000) {
+    hilBeatMs = hilNow;
+    Serial.println("WLS-HIL beat");
+    Serial.flush();
+  }
+#endif
   gWifi.loop();
   armScannerFromStation();
   gScanner.loop();

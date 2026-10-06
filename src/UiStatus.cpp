@@ -67,15 +67,12 @@ bool formatPersistStatus(char* out, size_t cap, const InventoryStoreResult& resu
     return finish(out, cap, snprintf(out, cap, "SD stored %s", result.path));
   }
   if (result.status == InventoryStoreStatus::Absent) {
-    return finish(out, cap, snprintf(out, cap, "SD absent"));
+    return finish(out, cap, snprintf(out, cap, "No SD"));
   }
   if (result.status == InventoryStoreStatus::Failed) {
-    return finish(out, cap, snprintf(out, cap, "SD error"));
+    return finish(out, cap, snprintf(out, cap, "Save failed"));
   }
-  if (result.detail != nullptr && strcmp(result.detail, "not-written") == 0) {
-    return finish(out, cap, snprintf(out, cap, "SD not written"));
-  }
-  return finish(out, cap, snprintf(out, cap, "SD unavailable"));
+  return finish(out, cap, snprintf(out, cap, "No save yet"));
 }
 
 bool formatPersistPanel(char* out, size_t cap, const InventoryStoreResult& result) {
@@ -83,7 +80,21 @@ bool formatPersistPanel(char* out, size_t cap, const InventoryStoreResult& resul
     return false;
   }
   if (result.status == InventoryStoreStatus::Stored && result.path[0] != '\0') {
-    return finish(out, cap, snprintf(out, cap, "Stored /WiFi-LAN-Scanner/scans/"));
+    return finish(out, cap, snprintf(out, cap, "SD Saved"));
   }
   return formatPersistStatus(out, cap, result);
+}
+
+bool formatAddressProgressLabel(char* out, size_t cap, uint16_t processed, uint16_t candidates) {
+  if (out == nullptr || cap < 8) {
+    return false;
+  }
+  return finish(out, cap, snprintf(out, cap, "Addresses %u/%u", processed, candidates));
+}
+
+bool formatDevicesFoundLabel(char* out, size_t cap, uint16_t observed) {
+  if (out == nullptr || cap < 8) {
+    return false;
+  }
+  return finish(out, cap, snprintf(out, cap, "Devices found %u", observed));
 }

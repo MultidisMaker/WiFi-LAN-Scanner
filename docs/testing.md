@@ -9,6 +9,7 @@ These files are compiled into both the firmware and the host tests:
 - `src/UiPress.cpp` — press, release, drag-off, acknowledgement, faces, glyphs, and masking
 - `src/NetMath.cpp` — IPv4 prefix, usable-host count, and address formatting
 - `src/CandidatePlan.cpp` — on-subnet candidate selection and the 256-host cap
+- `src/AddressRange.cpp` — automatic, custom, and next-window batches of 64, 128, or 256
 - `src/HostInventory.cpp` — in-memory de-duplicated observations
 - `src/PasswordBuffer.cpp` — typed password state, including Shift preservation
 - `src/ScannerController.cpp` — scanner state machine and discovery scheduling

@@ -278,6 +278,15 @@ const NamedAction kActions[] = {
     {"resume", AppAction::ResumeScan, false, -1}, {"stop", AppAction::StopScan, false, -1},
     {"reset", AppAction::ResetScan, false, -1},   {"hosts", AppAction::OpenHosts, false, -1},
     {"settings", AppAction::OpenSettings, false, -1},
+    {"service", AppAction::OpenService, false, -1},
+    {"range", AppAction::OpenRange, false, -1},
+    {"automatic", AppAction::SetAutomatic, false, -1},
+    {"custom", AppAction::SetCustom, false, -1},
+    {"count64", AppAction::SetLimit, false, 64},
+    {"count128", AppAction::SetLimit, false, 128},
+    {"count256", AppAction::SetLimit, false, 256},
+    {"windownext", AppAction::WindowNext, false, -1},
+    {"windowprev", AppAction::WindowPrev, false, -1},
     {"basic", AppAction::SetProfile, false, 0},   {"common", AppAction::SetProfile, false, 1},
     {"detailed", AppAction::SetProfile, false, 2},
     {"back", AppAction::Back, false, -1},         {"next", AppAction::NextPage, false, -1},
@@ -359,7 +368,15 @@ int writeState(char* out, int outCap, const AppState& state) {
   addInt(buf, state.canResume ? 1 : 0);
   addRaw(buf, ",\"profile\":\"");
   addEsc(buf, profileWire(state));
-  addRaw(buf, "\",\"ack\":\"");
+  addRaw(buf, "\",\"range\":\"");
+  addEsc(buf, strcmp(state.rangeMode, "custom") == 0 ? "custom" : "automatic");
+  addRaw(buf, "\",\"rangeStart\":\"");
+  addEsc(buf, state.rangeStart);
+  addRaw(buf, "\",\"rangeEnd\":\"");
+  addEsc(buf, state.rangeEnd);
+  addRaw(buf, "\",\"rangeLimit\":");
+  addInt(buf, state.rangeLimit);
+  addRaw(buf, ",\"ack\":\"");
   addEsc(buf, state.ack);
   addRaw(buf, "\"}");
   if (!buf.ok) {
@@ -508,8 +525,19 @@ int remoteSubmit(RemoteSession* session, const char* line, char* out, int outCap
     if (named->row && (!hasIndex || index < 0 || index > 5)) {
       return writeErr(out, outCap, "range");
     }
+    char ip[16];
+    ip[0] = '\0';
+    const char* text = nullptr;
+    if (named->action == AppAction::SetCustom) {
+      if (!findString(json, "ip", ip, sizeof(ip)) || ip[0] == '\0') {
+        char body[96];
+        snprintf(body, sizeof(body), "{\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"%s\",\"ok\":0}", name);
+        return finishFrame(out, outCap, body);
+      }
+      text = ip;
+    }
     if (services == nullptr || services->apply == nullptr ||
-        !services->apply(services->context, named->action, named->row ? index : named->argument)) {
+        !services->apply(services->context, named->action, named->row ? index : named->argument, text)) {
       const bool busy = services != nullptr && services->rejectedBusy != nullptr &&
                         services->rejectedBusy(services->context);
       char body[96];

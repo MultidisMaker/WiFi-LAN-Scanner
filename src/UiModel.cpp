@@ -19,7 +19,7 @@ void copyLabel(char* dest, size_t destLen, const char* text) {
 
 int appendControl(UiControl* out, int count, int cap, int id, int x, int y, int w, int h, const char* label,
                   const char* detail, char value, bool latched, const char* vendor = nullptr, bool secondary = false,
-                  bool dim = false) {
+                  bool dim = false, bool chrome = false, bool cancel = false) {
   if (count >= cap) {
     return count;
   }
@@ -36,6 +36,8 @@ int appendControl(UiControl* out, int count, int cap, int id, int x, int y, int 
   control.latched = latched;
   control.secondary = secondary;
   control.dim = dim;
+  control.chrome = chrome;
+  control.cancel = cancel;
   return count + 1;
 }
 
@@ -111,6 +113,24 @@ const char* uiControlName(int id) {
       return "common";
     case IdProfileDetailed:
       return "detailed";
+    case IdOpenService:
+      return "service";
+    case IdOpenRange:
+      return "range";
+    case IdRangeAuto:
+      return "automatic";
+    case IdRangeCustom:
+      return "custom";
+    case IdCount64:
+      return "count64";
+    case IdCount128:
+      return "count128";
+    case IdCount256:
+      return "count256";
+    case IdWindowPrev:
+      return "windowprev";
+    case IdWindowNext:
+      return "windownext";
     default:
       if (id >= IdRow0 && id < IdRow0 + 6) {
         return "row";
@@ -130,7 +150,7 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
         continue;
       }
       count = appendControl(out, count, cap, IdRow0 + row, 6, 40 + row * 52, 210, 48, snapshot.rowLabel[row],
-                            snapshot.rowDetail[row], 0, false, snapshot.rowVendor[row]);
+                            snapshot.rowDetail[row], 0, snapshot.rowSelected[row], snapshot.rowVendor[row]);
     }
     count = appendControl(out, count, cap, IdPrev, 6, 430, 64, 40, "Prev", nullptr, 0, false);
     count = appendControl(out, count, cap, IdNext, 76, 430, 64, 40, "Next", nullptr, 0, false);
@@ -154,12 +174,49 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
   }
 
   if (snapshot.phase == UiPhase::Settings) {
-    count = appendControl(out, count, cap, IdProfileBasic, 8, 78, 206, 60, "Basic / fast", nullptr, 0,
-                          snapshot.profile == ServiceProfile::Basic);
-    count = appendControl(out, count, cap, IdProfileCommon, 8, 168, 206, 60, "Common / recommended", nullptr, 0,
-                          snapshot.profile == ServiceProfile::Common);
-    count = appendControl(out, count, cap, IdProfileDetailed, 8, 328, 206, 52, "Detailed / slower", nullptr, 0,
-                          snapshot.profile == ServiceProfile::Detailed);
+    if (snapshot.settingsPage == SettingsPage::Service) {
+      count = appendControl(out, count, cap, IdProfileBasic, 8, 78, 206, 60, "Basic / fast", nullptr, 0,
+                            snapshot.profile == ServiceProfile::Basic);
+      count = appendControl(out, count, cap, IdProfileCommon, 8, 168, 206, 60, "Common / recommended", nullptr, 0,
+                            snapshot.profile == ServiceProfile::Common);
+      count = appendControl(out, count, cap, IdProfileDetailed, 8, 328, 206, 52, "Detailed / slower", nullptr, 0,
+                            snapshot.profile == ServiceProfile::Detailed);
+    } else if (snapshot.settingsPage == SettingsPage::Range) {
+      count = appendControl(out, count, cap, IdRangeAuto, 8, 78, 100, 52, "Automatic", nullptr, 0,
+                            snapshot.rangeAutomatic);
+      count = appendControl(out, count, cap, IdRangeCustom, 114, 78, 100, 52, "Custom", nullptr, 0,
+                            !snapshot.rangeAutomatic);
+      count = appendControl(out, count, cap, IdCount64, 8, 244, 64, 36, "64", nullptr, 0, snapshot.rangeLimit == 64);
+      count = appendControl(out, count, cap, IdCount128, 78, 244, 64, 36, "128", nullptr, 0, snapshot.rangeLimit == 128);
+      count = appendControl(out, count, cap, IdCount256, 148, 244, 64, 36, "256", nullptr, 0, snapshot.rangeLimit == 256);
+      if (snapshot.rangeCanPrev) {
+        count = appendControl(out, count, cap, IdWindowPrev, 8, 328, 100, 40, "Prev", nullptr, 0, false, nullptr, true,
+                              false);
+      }
+      if (snapshot.rangeCanNext) {
+        count = appendControl(out, count, cap, IdWindowNext, 114, 328, 100, 40, "Next", nullptr, 0, false, nullptr, true,
+                              false);
+      }
+    } else if (snapshot.settingsPage == SettingsPage::Edit) {
+      static const char kDigits[] = "123456789.0";
+      for (int i = 0; i < 11; ++i) {
+        const int row = i < 9 ? i / 3 : 3;
+        const int col = i < 9 ? i % 3 : i - 9;
+        const int y = row == 0 ? 78 : row == 1 ? 160 : row == 2 ? 244 : 328;
+        const int h = row == 2 ? 36 : row == 3 ? 40 : 52;
+        char label[2] = {kDigits[i], '\0'};
+        count = appendControl(out, count, cap, IdKeyBase + i, 8 + col * 70, y, 64, h, label, nullptr, kDigits[i], false);
+      }
+      count = appendControl(out, count, cap, IdDel, 148, 328, 64, 40, "Del", nullptr, 0, false, nullptr, true, false);
+      count = appendControl(out, count, cap, IdOk, 8, 376, 100, 40, "OK", nullptr, 0, false);
+      count = appendControl(out, count, cap, IdBack, 114, 376, 100, 40, "Back", nullptr, 0, false);
+      return count;
+    } else {
+      count = appendControl(out, count, cap, IdOpenService, 8, 78, 206, 56, "Service scan", nullptr, 0, false, nullptr,
+                            true, false);
+      count = appendControl(out, count, cap, IdOpenRange, 8, 160, 206, 56, "Address range", nullptr, 0, false, nullptr,
+                            true, false);
+    }
     count = appendControl(out, count, cap, IdBack, 6, 410, 210, 40, "Back", nullptr, 0, false);
     return count;
   }
@@ -176,11 +233,12 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
       }
     }
     count = appendControl(out, count, cap, IdShift, 6, 430, 50, 40, snapshot.shift ? "SHIFT" : "shift", nullptr, 0,
-                          snapshot.shift);
-    count = appendControl(out, count, cap, IdPage, 60, 430, 40, 40, "Pg", nullptr, 0, false);
-    count = appendControl(out, count, cap, IdDel, 104, 430, 36, 40, "Del", nullptr, 0, false);
+                          snapshot.shift, nullptr, true, false);
+    count = appendControl(out, count, cap, IdPage, 60, 430, 40, 40, "Pg", nullptr, 0, false, nullptr, true, false);
+    count = appendControl(out, count, cap, IdDel, 104, 430, 36, 40, "Del", nullptr, 0, false, nullptr, true, false);
     count = appendControl(out, count, cap, IdOk, 144, 430, 34, 40, "OK", nullptr, 0, false);
-    count = appendControl(out, count, cap, IdClose, 182, 430, 34, 40, "X", nullptr, 0, false);
+    count = appendControl(out, count, cap, IdClose, 182, 430, 34, 40, "X", nullptr, 0, false, nullptr, false, false, false,
+                          true);
     return count;
   }
 
@@ -190,9 +248,9 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
   }
   if (snapshot.showDashboard) {
     count = appendControl(out, count, cap, IdProgress, 8, 240, 206, 44, snapshot.progressLabel, snapshot.progressDetail,
-                          0, false);
+                          0, false, nullptr, false, false, true, false);
     count = appendControl(out, count, cap, IdNewest, 8, 286, 206, 34, snapshot.newestLabel, snapshot.newestDetail, 0,
-                          false, snapshot.newestVendor);
+                          false, snapshot.newestVendor, false, false, true, false);
   }
   const bool scanning = snapshot.scan == ScanState::Scanning;
   const bool paused = snapshot.scan == ScanState::Paused;
@@ -221,6 +279,9 @@ int collectUiControls(UiControl* out, int cap, const UiSnapshot& snapshot) {
 int hitUiControl(const UiControl* controls, int count, int x, int y) {
   for (int i = 0; i < count; ++i) {
     const UiControl& control = controls[i];
+    if (control.chrome) {
+      continue;
+    }
     if (x >= control.x && x < control.x + control.w && y >= control.y && y < control.y + control.h) {
       return control.id;
     }

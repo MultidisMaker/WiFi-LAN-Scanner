@@ -258,6 +258,8 @@ void hilLive() {
   scanner.reset();
   serviceNameEnrichment(scanner);
   scanner.armConnectedFacts(facts);
+  scanner.setAutomatic();
+  scanner.setLimit(256);
   reportResource("before-scan");
   scanner.start();
   const bool probeArmed = waitUntilProbe(scanner);
@@ -1044,6 +1046,52 @@ void hilActions() {
                 hostsOk ? 1 : 0, same ? 1 : 0);
 }
 
+void hilRange() {
+  ScannerController& scanner = deviceScanner();
+  scanner.reset();
+  const NetFacts facts = deriveNetFacts(ipv4(10, 1, 0, 9), ipv4(255, 255, 0, 0), ipv4(10, 1, 5, 5), ipv4(10, 1, 0, 1),
+                                        ipv4(0, 0, 0, 0));
+  scanner.armConnectedFacts(facts);
+  scanner.setAutomatic();
+  scanner.setLimit(256);
+  RangePreview preview = scanner.preview();
+  bool pass = preview.valid && preview.count == 256 && preview.gatewayForced && preview.gatewayIncluded && preview.canNext &&
+              !preview.canPrev && ipv4Equal(preview.nextOrigin, ipv4(10, 1, 1, 1)) &&
+              ipv4Equal(preview.end, ipv4(10, 1, 5, 5));
+  pass = pass && scanner.setLimit(64) && scanner.setCustomStart(ipv4(10, 1, 2, 10));
+  preview = scanner.preview();
+  pass = pass && preview.valid && preview.mode == RangeMode::Custom && preview.count == 64 && preview.limit == 64 &&
+         !preview.clamped && ipv4Equal(preview.start, ipv4(10, 1, 2, 10)) && ipv4Equal(preview.end, ipv4(10, 1, 2, 73)) &&
+         !preview.gatewayIncluded;
+  pass = pass && !scanner.setCustomStart(ipv4(10, 2, 0, 1));
+  pass = pass && !scanner.setCustomStart(ipv4(10, 1, 0, 0));
+  pass = pass && !scanner.setCustomStart(ipv4(10, 1, 255, 255));
+  preview = scanner.preview();
+  pass = pass && ipv4Equal(preview.start, ipv4(10, 1, 2, 10));
+  pass = pass && scanner.setCustomStart(ipv4(10, 1, 0, 9));
+  preview = scanner.preview();
+  pass = pass && preview.valid && ipv4Equal(preview.start, ipv4(10, 1, 0, 10));
+  pass = pass && scanner.setLimit(256) && scanner.setCustomStart(ipv4(10, 1, 255, 200));
+  preview = scanner.preview();
+  pass = pass && preview.valid && preview.clamped && preview.count == 55 && preview.count <= kCandidateCap &&
+         ipv4Equal(preview.end, ipv4(10, 1, 255, 254));
+  pass = pass && !scanner.setLimit(512) && !scanner.setLimit(0);
+  scanner.setAutomatic();
+  scanner.setLimit(256);
+  pass = pass && scanner.windowNext();
+  preview = scanner.preview();
+  pass = pass && preview.mode == RangeMode::Custom && preview.count == 256 && ipv4Equal(preview.start, ipv4(10, 1, 1, 1)) &&
+         !preview.gatewayIncluded;
+  pass = pass && scanner.windowPrev();
+  preview = scanner.preview();
+  pass = pass && preview.mode == RangeMode::Automatic && preview.gatewayForced && preview.count == 256 && preview.limit == 256;
+  scanner.setAutomatic();
+  scanner.setLimit(256);
+  scanner.reset();
+  scanner.holdFacts(true);
+  Serial.printf("WLS-HIL RANGE pass=%d\n", pass ? 1 : 0);
+}
+
 void hilDispatch(const char* line) {
   if (strncmp(line, "@R1 ", 4) == 0) {
     usbRemoteSubmitLine(line);
@@ -1073,6 +1121,8 @@ void hilDispatch(const char* line) {
     hilPersist();
   } else if (strcmp(line, "LIVECLOSE") == 0) {
     hilLiveClose();
+  } else if (strcmp(line, "RANGE") == 0) {
+    hilRange();
   } else if (strcmp(line, "SDPROBE") == 0) {
     const SdProbeResult probe = probeSdMedia();
     if (strcmp(probe.result, "stored") == 0) {

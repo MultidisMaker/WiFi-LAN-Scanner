@@ -27,6 +27,15 @@ enum UiControlId : int {
   IdProfileBasic,
   IdProfileCommon,
   IdProfileDetailed,
+  IdOpenService,
+  IdOpenRange,
+  IdRangeAuto,
+  IdRangeCustom,
+  IdCount64,
+  IdCount128,
+  IdCount256,
+  IdWindowPrev,
+  IdWindowNext,
   IdKeyBase = 100,
   // Rows used to sit in the sequential list, which made IdRow0 + 1 equal IdPrev.
   // Previous, Next, and Back then never ran. Keep rows in their own range.
@@ -34,6 +43,7 @@ enum UiControlId : int {
 };
 
 enum class UiPhase : uint8_t { Home, Results, Password, Hosts, Settings };
+enum class SettingsPage : uint8_t { Menu = 0, Service = 1, Range = 2, Edit = 3 };
 
 struct UiControl {
   int id;
@@ -48,6 +58,8 @@ struct UiControl {
   bool latched;
   bool secondary;
   bool dim;
+  bool chrome;
+  bool cancel;
 };
 
 struct UiSnapshot {
@@ -64,7 +76,17 @@ struct UiSnapshot {
   char newestDetail[40] = {};
   char newestVendor[32] = {};
   ServiceProfile profile = ServiceProfile::Common;
+  SettingsPage settingsPage = SettingsPage::Menu;
+  bool rangeAutomatic = true;
+  bool rangeCanPrev = false;
+  bool rangeCanNext = false;
+  uint16_t rangeLimit = 256;
+  char rangeStart[16] = {};
+  char rangeEnd[16] = {};
+  char rangeNote[22] = {};
+  char editText[16] = {};
   bool rowPresent[6] = {};
+  bool rowSelected[6] = {};
   char rowLabel[6][22] = {};
   char rowDetail[6][40] = {};
   char rowVendor[6][32] = {};

@@ -48,6 +48,29 @@ int expectedControl(AppAction action, int rowOffset) {
         return -1;
       }
       return IdProfileBasic + rowOffset;
+    case AppAction::OpenService:
+      return IdOpenService;
+    case AppAction::OpenRange:
+      return IdOpenRange;
+    case AppAction::SetAutomatic:
+      return IdRangeAuto;
+    case AppAction::SetCustom:
+      return IdRangeCustom;
+    case AppAction::SetLimit:
+      if (rowOffset == 64) {
+        return IdCount64;
+      }
+      if (rowOffset == 128) {
+        return IdCount128;
+      }
+      if (rowOffset == 256) {
+        return IdCount256;
+      }
+      return -1;
+    case AppAction::WindowPrev:
+      return IdWindowPrev;
+    case AppAction::WindowNext:
+      return IdWindowNext;
     case AppAction::Back:
       return IdBack;
     case AppAction::NextPage:
@@ -112,6 +135,20 @@ const char* actionToken(AppAction action) {
       return "settings";
     case AppAction::SetProfile:
       return "profile";
+    case AppAction::OpenService:
+      return "service";
+    case AppAction::OpenRange:
+      return "range";
+    case AppAction::SetAutomatic:
+      return "automatic";
+    case AppAction::SetCustom:
+      return "custom";
+    case AppAction::SetLimit:
+      return "count";
+    case AppAction::WindowPrev:
+      return "windowprev";
+    case AppAction::WindowNext:
+      return "windownext";
     case AppAction::Back:
       return "back";
     case AppAction::NextPage:

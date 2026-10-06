@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "AddressRange.h"
 #include "CandidatePlan.h"
 #include "DiscoveryBackend.h"
 #include "HostInventory.h"
@@ -23,6 +24,15 @@ class ScannerController {
   void setBackend(DiscoveryBackend* backend);
   void armConnectedFacts(const NetFacts& facts);
   void armDisconnected();
+  // Test image only. While held, station refresh does not replace the armed facts.
+  void holdFacts(bool hold);
+  bool setAutomatic();
+  bool acceptsCustomStart(const Ipv4& start) const;
+  bool setCustomStart(const Ipv4& start);
+  bool setLimit(uint16_t limit);
+  bool windowNext();
+  bool windowPrev();
+  RangePreview preview() const;
   void start();
   void pause();
   void resume();
@@ -49,7 +59,9 @@ class ScannerController {
   ScanState state_ = ScanState::Idle;
   uint32_t enteredMs_ = 0;
   bool connected_ = false;
+  bool factsHeld_ = false;
   NetFacts armed_ = {};
+  AddressWindow window_ = {};
   DiscoveryBackend* backend_ = nullptr;
   CandidatePlan plan_ = {};
   HostInventory inventory_;

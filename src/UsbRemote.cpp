@@ -17,12 +17,12 @@ char gLine[416];
 size_t gUsed = 0;
 bool gDrop = false;
 
-bool applyRemote(void* context, AppAction action, int rowOffset) {
+bool applyRemote(void* context, AppAction action, int rowOffset, const char* text) {
   (void)context;
   if (gUi == nullptr) {
     return false;
   }
-  return gUi->applyRemote(action, rowOffset);
+  return gUi->applyRemote(action, rowOffset, text);
 }
 
 bool remoteRejectedBusy(void* context) {

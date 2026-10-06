@@ -102,6 +102,33 @@ AppAction actionFromControl(int id, int* rowOffset) {
         *rowOffset = 2;
       }
       return AppAction::SetProfile;
+    case IdOpenService:
+      return AppAction::OpenService;
+    case IdOpenRange:
+      return AppAction::OpenRange;
+    case IdRangeAuto:
+      return AppAction::SetAutomatic;
+    case IdRangeCustom:
+      return AppAction::SetCustom;
+    case IdCount64:
+      if (rowOffset != nullptr) {
+        *rowOffset = 64;
+      }
+      return AppAction::SetLimit;
+    case IdCount128:
+      if (rowOffset != nullptr) {
+        *rowOffset = 128;
+      }
+      return AppAction::SetLimit;
+    case IdCount256:
+      if (rowOffset != nullptr) {
+        *rowOffset = 256;
+      }
+      return AppAction::SetLimit;
+    case IdWindowPrev:
+      return AppAction::WindowPrev;
+    case IdWindowNext:
+      return AppAction::WindowNext;
     case IdBack:
       return AppAction::Back;
     case IdNext:
@@ -123,7 +150,8 @@ AppAction actionFromControl(int id, int* rowOffset) {
   }
 }
 
-void applyAppAction(AppAction action, AppView& view, ScannerController& scanner, const AppHooks* hooks) {
+bool applyAppAction(AppAction action, AppView& view, ScannerController& scanner, const AppHooks* hooks,
+                    const char* text) {
   const AppHooks* wifi = hooks;
   switch (action) {
     case AppAction::FindNetworks:
@@ -163,8 +191,54 @@ void applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
         view.page = 0;
         view.showingHosts = false;
         view.showingSettings = true;
+        view.settingsPage = SettingsPage::Menu;
       }
-      break;
+      return true;
+    case AppAction::OpenService:
+      if (!view.resultsOpen && !view.entryOpen) {
+        view.page = 0;
+        view.showingHosts = false;
+        view.showingSettings = true;
+        view.settingsPage = SettingsPage::Service;
+      }
+      return true;
+    case AppAction::OpenRange:
+      if (!view.resultsOpen && !view.entryOpen) {
+        view.page = 0;
+        view.showingHosts = false;
+        view.showingSettings = true;
+        view.settingsPage = SettingsPage::Range;
+      }
+      return true;
+    case AppAction::SetAutomatic:
+      return scanner.setAutomatic();
+    case AppAction::SetCustom:
+      if (text == nullptr || text[0] == '\0') {
+        if (view.resultsOpen || view.entryOpen) {
+          return false;
+        }
+        view.page = 0;
+        view.showingHosts = false;
+        view.showingSettings = true;
+        view.settingsPage = SettingsPage::Edit;
+        return true;
+      }
+      {
+        Ipv4 start;
+        if (!parseIpv4(text, start) || !scanner.setCustomStart(start)) {
+          return false;
+        }
+        view.showingHosts = false;
+        view.showingSettings = true;
+        view.settingsPage = SettingsPage::Range;
+        return true;
+      }
+    case AppAction::SetLimit:
+      return scanner.setLimit(static_cast<uint16_t>(view.rowOffset));
+    case AppAction::WindowNext:
+      return scanner.windowNext();
+    case AppAction::WindowPrev:
+      return scanner.windowPrev();
     case AppAction::SetProfile:
       if (view.rowOffset >= 0 && view.rowOffset <= 2) {
         view.profile = static_cast<ServiceProfile>(view.rowOffset);
@@ -172,11 +246,17 @@ void applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
           wifi->setProfile(wifi->context, view.rowOffset);
         }
       }
-      break;
+      return true;
     case AppAction::Back:
       view.page = 0;
       if (view.showingSettings) {
-        view.showingSettings = false;
+        if (view.settingsPage == SettingsPage::Edit) {
+          view.settingsPage = SettingsPage::Range;
+        } else if (view.settingsPage != SettingsPage::Menu) {
+          view.settingsPage = SettingsPage::Menu;
+        } else {
+          view.showingSettings = false;
+        }
       } else if (view.showingHosts) {
         view.showingHosts = false;
       } else if (view.resultsOpen) {
@@ -186,7 +266,7 @@ void applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
       } else if (wifi != nullptr) {
         call(wifi->cancelPassword, wifi->context);
       }
-      break;
+      return true;
     case AppAction::NextPage:
       if (view.showingHosts) {
         if ((view.page + 1) * 6 < static_cast<int>(view.observedCount)) {
@@ -205,34 +285,35 @@ void applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
       if (wifi != nullptr) {
         call(wifi->toggleShift, wifi->context);
       }
-      break;
+      return true;
     case AppAction::KeyboardPage:
       view.keyboardPage ^= 1;
-      break;
+      return true;
     case AppAction::Backspace:
       if (wifi != nullptr) {
         call(wifi->backspace, wifi->context);
       }
-      break;
+      return true;
     case AppAction::SubmitPassword:
       if (wifi != nullptr) {
         call(wifi->submitPassword, wifi->context);
       }
-      break;
+      return true;
     case AppAction::CancelPassword:
       if (wifi != nullptr) {
         call(wifi->cancelPassword, wifi->context);
       }
-      break;
+      return true;
     case AppAction::SelectRow:
       if (!view.showingHosts && !view.showingSettings && view.resultsOpen && view.rowOffset >= 0 && view.rowOffset < 6 &&
           wifi != nullptr && wifi->selectResult != nullptr) {
         wifi->selectResult(wifi->context, view.page * 6 + view.rowOffset);
       }
-      break;
+      return true;
     case AppAction::None:
-      break;
+      return true;
   }
+  return true;
 }
 
 void fillAppState(AppState& out, const AppView& view, const ScannerController& scanner, const AppWifiView& wifi,
@@ -276,6 +357,13 @@ void fillAppState(AppState& out, const AppView& view, const ScannerController& s
   out.canPause = state == ScanState::Scanning;
   out.canResume = state == ScanState::Paused;
   copyToken(out.profile, sizeof(out.profile), serviceProfileToken(profile));
+  const RangePreview range = scanner.preview();
+  copyToken(out.rangeMode, sizeof(out.rangeMode), range.mode == RangeMode::Custom ? "custom" : "automatic");
+  if (range.valid) {
+    formatIpv4(range.start, out.rangeStart, sizeof(out.rangeStart));
+    formatIpv4(range.end, out.rangeEnd, sizeof(out.rangeEnd));
+  }
+  out.rangeLimit = addressLimitOk(range.limit) ? range.limit : 256;
 }
 
 int formatAppStateLine(char* out, int cap, const AppState& state) {
