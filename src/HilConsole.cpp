@@ -964,7 +964,7 @@ void hilAct(AppView& view, bool viaControl, int id, AppAction direct, uint16_t h
   view.observedCount = heldCount;
   int row = -1;
   const AppAction action = viaControl ? actionFromControl(id, &row) : direct;
-  if (action == AppAction::SelectRow) {
+  if (action == AppAction::SelectRow || action == AppAction::SetProfile) {
     view.rowOffset = row;
   }
   applyAppAction(action, view, gHilScanner, nullptr);

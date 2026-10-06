@@ -5,6 +5,7 @@
 #include "InventoryStore.h"
 #include "ScannerController.h"
 #include "UiPress.h"
+#include "UiRender.h"
 #include "WifiService.h"
 
 class ScannerUi {
@@ -27,24 +28,19 @@ class ScannerUi {
   int page_ = 0;
   int keyboardPage_ = 0;
   bool showingHosts_ = false;
-  unsigned long lastDrawMs_ = 0;
-  WifiPhase drawnPhase_ = WifiPhase::Idle;
-  ScanState drawnScan_ = ScanState::Idle;
-  bool drawnShift_ = false;
-  int drawnPassLen_ = -1;
-  bool drawnSaved_ = false;
-  int drawnPage_ = -1;
-  int drawnKeyboard_ = -1;
-  int drawnObserved_ = -1;
-  int drawnProcessed_ = -1;
-  bool drawnHosts_ = false;
-  InventoryStoreStatus drawnStore_ = InventoryStoreStatus::Unavailable;
-  char drawnPath_[64] = {};
-  bool force_ = true;
+  bool showingSettings_ = false;
+  ServiceProfile profile_ = ServiceProfile::Common;
+  bool drawnValid_ = false;
+  UiPaintFrame drawn_{};
+  uint32_t lastPaintLogMs_ = 0;
+  uint32_t lastLoggedMask_ = 0xffffffffu;
 
-  void draw(bool full);
-  void drawChrome();
-  void paintControls();
+  void fillSnapshot(UiSnapshot& snapshot) const;
+  UiPaintFrame makeFrame(const UiSnapshot& snapshot, const UiControl* controls, int count) const;
+  void paintMasked(uint32_t mask, const UiSnapshot& snapshot, const UiControl* controls, int count, int shownId);
+  void servicePaint();
+  void paintAckNow(int controlId);
+  void noteProfile(ServiceProfile next);
   int hitControl(int x, int y) const;
   void dispatch(int id);
   void noteTouch(const char* event, int id, int x, int y, bool includePoint);

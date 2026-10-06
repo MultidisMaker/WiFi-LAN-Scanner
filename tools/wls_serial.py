@@ -174,7 +174,6 @@ def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
             ("hosts", None),
             ("row", '{"v":1,"op":"ACTION","name":"row","index":0}'),
             ("back", None),
-            ("pause", None),
         )
     else:
         sequence = (
@@ -188,6 +187,11 @@ def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
             ("resume", None),
             ("stop", None),
             ("reset", None),
+            ("settings", None),
+            ("basic", None),
+            ("detailed", None),
+            ("common", None),
+            ("back", None),
         )
 
     def remote_action(name, body=None, face="pressed"):
@@ -199,10 +203,11 @@ def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
             transcript.append("! remote-action " + name)
             return False
         window = transcript[start:]
-        armed = "WLS ui ack arm control=%s face=%s ms=120" % (name, face)
+        faces = face if isinstance(face, tuple) else (face,)
+        armed_lines = tuple("WLS ui ack arm control=%s face=%s ms=120" % (name, item) for item in faces)
         skipped = "WLS ui ack skip action=%s" % name
         fired = "WLS ui ack fire control=%s" % name
-        if armed in window:
+        if any(line in window for line in armed_lines):
             got, pending = read_until(
                 port,
                 lambda line, fired=fired: line == fired,
@@ -220,9 +225,41 @@ def exercise_remote(port, transcript, pending=b"", live_ip=None, secret=None):
         transcript.append("! remote-ack-missing " + name)
         return False
 
+    def wait_scan(tokens, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            line = step('{"v":1,"op":"GET_STATE"}', state_ok, 8)
+            if line and any(('"scan":"%s"' % token) in line for token in tokens):
+                return True
+            time.sleep(0.3)
+        transcript.append("! remote-scan-wait " + ",".join(tokens))
+        return False
+
     for name, body in sequence:
         if not remote_action(name, body):
             return False, pending
+
+    if live_ip is not None:
+        if not remote_action("start"):
+            return False, pending
+        if not wait_scan(("SCANNING",), 20):
+            return False, pending
+        if not remote_action("pause"):
+            return False, pending
+        if not wait_scan(("PAUSED",), 8):
+            return False, pending
+        if not remote_action("resume"):
+            return False, pending
+        if not wait_scan(("SCANNING",), 8):
+            return False, pending
+        if not remote_action("stop"):
+            return False, pending
+        if not wait_scan(("COMPLETE", "IDLE"), 15):
+            return False, pending
+        for name in ("settings", "basic", "detailed", "common", "back"):
+            profile_face = ("pressed", "latchedpressed") if name in ("basic", "common", "detailed") else "pressed"
+            if not remote_action(name, face=profile_face):
+                return False, pending
 
     if live_ip is None:
         empty = step('{"v":1,"op":"GET_RESULTS"}', exact('@R1 {"v":1,"op":"RESULT_END","count":0}'), 4)

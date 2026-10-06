@@ -41,6 +41,13 @@ int expectedControl(AppAction action, int rowOffset) {
       return IdReset;
     case AppAction::OpenHosts:
       return IdHosts;
+    case AppAction::OpenSettings:
+      return IdSettings;
+    case AppAction::SetProfile:
+      if (rowOffset < 0 || rowOffset > 2) {
+        return -1;
+      }
+      return IdProfileBasic + rowOffset;
     case AppAction::Back:
       return IdBack;
     case AppAction::NextPage:
@@ -101,6 +108,10 @@ const char* actionToken(AppAction action) {
       return "reset";
     case AppAction::OpenHosts:
       return "hosts";
+    case AppAction::OpenSettings:
+      return "settings";
+    case AppAction::SetProfile:
+      return "profile";
     case AppAction::Back:
       return "back";
     case AppAction::NextPage:

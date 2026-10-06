@@ -1,7 +1,9 @@
 #include "ScannerUi.h"
 
+#include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 #include <WiFi.h>
+#include <canvas/Arduino_Canvas.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -12,13 +14,17 @@
 #include "InventoryStore.h"
 #include "NameRecord.h"
 #include "NetMath.h"
-#include "Oui.h"
 #include "NetworkRange.h"
+#include "Oui.h"
+#include "ServiceProfileStore.h"
 #include "TouchBoard.h"
 #include "UiModel.h"
+#include "UiRender.h"
 #include "UiStatus.h"
 
 namespace {
+
+Arduino_Canvas* gSprite = nullptr;
 
 WifiService* wifiFrom(void* context) { return static_cast<WifiService*>(context); }
 
@@ -71,89 +77,105 @@ void copyLabel(char* dest, size_t destLen, const char* text) {
   dest[i] = '\0';
 }
 
-void textLine(Arduino_GFX& gfx, int x, int y, int size, uint16_t color, const char* text) {
-  gfx.setTextSize(size);
-  gfx.setTextColor(color);
-  gfx.setCursor(x, y);
-  gfx.print(text == nullptr ? "" : text);
+uint32_t mixText(uint32_t hash, const char* text) {
+  if (text == nullptr) {
+    return hash;
+  }
+  for (size_t i = 0; text[i] != '\0'; ++i) {
+    hash ^= static_cast<unsigned char>(text[i]);
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+struct Clip {
+  Arduino_GFX* gfx;
+  int ox;
+  int oy;
+  int x0;
+  int y0;
+  int x1;
+  int y1;
+};
+
+bool boxInside(const Clip& clip, int x, int y, int w, int h) {
+  return w >= 0 && h >= 0 && x >= clip.x0 && y >= clip.y0 && x + w <= clip.x1 && y + h <= clip.y1;
+}
+
+void fillClip(const Clip& clip, int x, int y, int w, int h, uint16_t color) {
+  int left = x < clip.x0 ? clip.x0 : x;
+  int top = y < clip.y0 ? clip.y0 : y;
+  int right = x + w > clip.x1 ? clip.x1 : x + w;
+  int bottom = y + h > clip.y1 ? clip.y1 : y + h;
+  if (right <= left || bottom <= top) {
+    return;
+  }
+  clip.gfx->fillRect(left - clip.ox, top - clip.oy, right - left, bottom - top, color);
+}
+
+void textClip(const Clip& clip, int x, int y, int size, uint16_t color, const char* text) {
+  const int h = size * 8;
+  if (y < clip.y0 || y + h > clip.y1 || x >= clip.x1) {
+    return;
+  }
+  clip.gfx->setTextSize(size);
+  clip.gfx->setTextColor(color);
+  clip.gfx->setCursor(x - clip.ox, y - clip.oy);
+  clip.gfx->print(text == nullptr ? "" : text);
 }
 
 const char* securityLabel(bool secure) { return secure ? "SEC" : "OPEN"; }
 
-int gatherControls(UiControl* out, int cap, const WifiService& wifi, const ScannerController& scanner, int page,
-                   int keyboardPage, bool hostsView) {
-  UiSnapshot snapshot;
-  const WifiPhase phase = wifi.phase();
-  if (phase == WifiPhase::Results) {
-    snapshot.phase = UiPhase::Results;
-  } else if (phase == WifiPhase::Password) {
-    snapshot.phase = UiPhase::Password;
-  } else if (hostsView) {
-    snapshot.phase = UiPhase::Hosts;
-  } else {
-    snapshot.phase = UiPhase::Home;
-  }
-  snapshot.saved = wifi.hasSavedNetwork();
-  snapshot.shift = wifi.shiftOn();
-  snapshot.keyboardPage = keyboardPage;
-  snapshot.listPage = page;
-  snapshot.scan = scanner.state();
-  if (snapshot.phase == UiPhase::Results) {
-    const int start = page * 6;
-    for (int row = 0; row < 6; ++row) {
-      const WifiAp* ap = wifi.resultAt(start + row);
-      if (ap == nullptr) {
-        continue;
-      }
-      snapshot.rowPresent[row] = true;
-      copyLabel(snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]), ap->ssid);
-      snprintf(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), "%s %ld dBm", securityLabel(ap->secure),
-               static_cast<long>(ap->rssi));
-    }
-  } else if (snapshot.phase == UiPhase::Hosts) {
-    const int start = page * 6;
-    for (int row = 0; row < 6; ++row) {
-      const ObservedHost* host = scanner.hostAt(static_cast<uint16_t>(start + row));
-      if (host == nullptr) {
-        continue;
-      }
-      snapshot.rowPresent[row] = true;
-      formatIpv4(host->ip, snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]));
-      formatHostDetail(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), host->nameSource, host->name,
-                       host->hasMac, host->mac);
-      formatOuiLine(snapshot.rowVendor[row], sizeof(snapshot.rowVendor[row]), host->ouiState, host->manufacturer);
-    }
-  } else if (snapshot.phase == UiPhase::Home) {
-    snapshot.showDashboard = true;
-    formatScanCard(snapshot.progressLabel, sizeof(snapshot.progressLabel), scanner.state(),
-                   wifi.phase() == WifiPhase::Connected, scanner.processedCount(), scanner.candidateCount());
-    const unsigned long seconds = static_cast<unsigned long>(scanner.elapsedMs() / 1000UL);
-    if (scanner.hasCurrent()) {
-      char current[16];
-      formatIpv4(scanner.currentAddress(), current, sizeof(current));
-      snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "%s %lus", current, seconds);
-    } else if (scanner.hasLast()) {
-      char last[16];
-      formatIpv4(scanner.lastAddress(), last, sizeof(last));
-      snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "last %s", last);
-    } else {
-      snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "elapsed %lus", seconds);
-    }
-    const ObservedHost* newest = scanner.newest();
-    if (newest == nullptr) {
-      copyLabel(snapshot.newestLabel, sizeof(snapshot.newestLabel), "No device yet");
-      copyLabel(snapshot.newestDetail, sizeof(snapshot.newestDetail), "none observed");
-    } else {
-      formatIpv4(newest->ip, snapshot.newestLabel, sizeof(snapshot.newestLabel));
-      formatHostDetail(snapshot.newestDetail, sizeof(snapshot.newestDetail), newest->nameSource, newest->name,
-                       newest->hasMac, newest->mac);
-      formatOuiLine(snapshot.newestVendor, sizeof(snapshot.newestVendor), newest->ouiState, newest->manufacturer);
-    }
-  }
-  return collectUiControls(out, cap, snapshot);
+bool intersects(const UiControl& control, const Clip& clip) {
+  return control.x < clip.x1 && control.x + control.w > clip.x0 && control.y < clip.y1 && control.y + control.h > clip.y0;
 }
 
-void paintControl(Arduino_GFX& gfx, const UiControl& control, bool pressed) {
+void paintIcon(const Clip& clip, int id, int x, int y, uint16_t ink) {
+  if (!boxInside(clip, x, y, 12, 12)) {
+    return;
+  }
+  const int dx = x - clip.ox;
+  const int dy = y - clip.oy;
+  switch (id) {
+    case IdStart:
+    case IdResume:
+      clip.gfx->fillTriangle(dx, dy, dx, dy + 10, dx + 8, dy + 5, ink);
+      break;
+    case IdPause:
+      clip.gfx->fillRect(dx, dy, 3, 11, ink);
+      clip.gfx->fillRect(dx + 6, dy, 3, 11, ink);
+      break;
+    case IdStop:
+      clip.gfx->fillRect(dx, dy, 10, 10, ink);
+      break;
+    case IdHosts:
+      clip.gfx->fillRect(dx, dy, 11, 2, ink);
+      clip.gfx->fillRect(dx, dy + 4, 11, 2, ink);
+      clip.gfx->fillRect(dx, dy + 8, 11, 2, ink);
+      break;
+    case IdBack:
+      clip.gfx->drawLine(dx + 7, dy, dx + 1, dy + 5, ink);
+      clip.gfx->drawLine(dx + 1, dy + 5, dx + 7, dy + 10, ink);
+      break;
+    case IdSettings:
+      clip.gfx->fillRect(dx, dy + 1, 11, 2, ink);
+      clip.gfx->fillRect(dx, dy + 5, 11, 2, ink);
+      clip.gfx->fillRect(dx, dy + 9, 11, 2, ink);
+      break;
+    default:
+      break;
+  }
+}
+
+bool iconFor(int id) {
+  return id == IdStart || id == IdResume || id == IdPause || id == IdStop || id == IdHosts || id == IdBack ||
+         id == IdSettings;
+}
+
+void paintControl(const Clip& clip, const UiControl& control, bool pressed) {
+  if (!intersects(control, clip)) {
+    return;
+  }
   const ControlFace face = controlFace(control.latched, pressed);
   uint16_t fill = BLACK;
   uint16_t ink = WHITE;
@@ -170,26 +192,72 @@ void paintControl(Arduino_GFX& gfx, const UiControl& control, bool pressed) {
     fill = ORANGE;
     ink = BLACK;
     border = ORANGE;
+  } else if (control.dim) {
+    ink = DARKGREY;
+    border = DARKGREY;
+  } else if (control.secondary) {
+    border = WHITE;
   }
-  gfx.fillRect(control.x, control.y, control.w, control.h, fill);
-  gfx.drawRect(control.x, control.y, control.w, control.h, border);
+  fillClip(clip, control.x, control.y, control.w, control.h, fill);
+  if (boxInside(clip, control.x, control.y, control.w, control.h)) {
+    clip.gfx->drawRect(control.x - clip.ox, control.y - clip.oy, control.w, control.h, border);
+  }
   const bool single = control.label[0] != '\0' && control.label[1] == '\0';
+  const bool icon = !single && control.w >= 64 && iconFor(control.id);
+  if (icon) {
+    paintIcon(clip, control.id, control.x + 6, control.y + (control.h / 2) - 5, ink);
+  }
   const int size = single ? 2 : 1;
   const int textW = single ? 12 : 6 * static_cast<int>(strlen(control.label));
-  int textX = control.x + 6;
+  int textX = control.x + (icon ? 20 : 6);
   if (single) {
     textX = control.x + (control.w - textW) / 2;
     if (textX < control.x + 1) {
       textX = control.x + 1;
     }
   }
-  const int textY = control.detail[0] == '\0' ? control.y + (control.h / 2) - (single ? 8 : 4) : control.y + 8;
-  textLine(gfx, textX, textY, size, ink, control.label);
-  if (control.detail[0] != '\0') {
-    textLine(gfx, control.x + 6, control.y + 26, 1, ink, control.detail);
+  int textY = control.detail[0] == '\0' ? control.y + (control.h / 2) - (single ? 8 : 4) : control.y + 8;
+  if (control.id == IdProgress) {
+    textY = control.y + 4;
   }
-  if (control.vendor[0] != '\0' && control.h >= 44) {
-    textLine(gfx, control.x + 6, control.y + 36, 1, ink, control.vendor);
+  textClip(clip, textX, textY, size, ink, control.label);
+  if (control.detail[0] != '\0') {
+    const int detailY = control.id == IdProgress ? control.y + 16 : control.y + 26;
+    textClip(clip, control.x + 6, detailY, 1, ink, control.detail);
+  }
+  if (control.vendor[0] != '\0' && control.h >= 44 && control.id != IdProgress) {
+    textClip(clip, control.x + 6, control.y + 36, 1, ink, control.vendor);
+  }
+}
+
+void paintAddressBar(const Clip& clip, uint16_t processed, uint16_t candidates) {
+  const int percent = progressPercent(processed, candidates);
+  const int x = 14;
+  const int y = 270;
+  const int w = 194;
+  const int h = 8;
+  if (!boxInside(clip, x, y, w, h)) {
+    return;
+  }
+  clip.gfx->drawRect(x - clip.ox, y - clip.oy, w, h, CYAN);
+  const int inner = w - 2;
+  int fillW = (inner * percent) / 100;
+  if (percent > 0 && fillW < 1) {
+    fillW = 1;
+  }
+  if (fillW > 0) {
+    clip.gfx->fillRect(x + 1 - clip.ox, y + 1 - clip.oy, fillW, h - 2, GREEN);
+  }
+}
+
+void ensureSprite() {
+  if (gSprite != nullptr || !deviceDisplay().ready() || !psramFound()) {
+    return;
+  }
+  gSprite = new Arduino_Canvas(kUiSpriteW, kUiSpriteH, &deviceDisplay().panel(), 0, 0);
+  if (gSprite == nullptr || !gSprite->begin(GFX_SKIP_OUTPUT_BEGIN) || gSprite->getFramebuffer() == nullptr) {
+    delete gSprite;
+    gSprite = nullptr;
   }
 }
 
@@ -198,163 +266,354 @@ void paintControl(Arduino_GFX& gfx, const UiControl& control, bool pressed) {
 void ScannerUi::begin(WifiService& wifi, ScannerController& scanner) {
   wifi_ = &wifi;
   scanner_ = &scanner;
-  force_ = true;
+  drawnValid_ = false;
+  bool fromNvs = false;
+  profile_ = loadServiceProfile(&fromNvs);
+  Serial.printf("WLS profile=%s source=%s\n", serviceProfileToken(profile_), fromNvs ? "nvs" : "default");
+  ensureSprite();
+  Serial.printf("WLS ui sprite pool=%s bytes=%u w=%d h=%d\n", gSprite != nullptr ? "psram" : "none",
+                static_cast<unsigned>(kUiSpriteW * kUiSpriteH * 2), kUiSpriteW, kUiSpriteH);
 }
 
-void ScannerUi::drawChrome() {
-  Arduino_GFX& gfx = deviceDisplay().panel();
-  if (showingHosts_ && wifi_->phase() != WifiPhase::Results && wifi_->phase() != WifiPhase::Password) {
-    textLine(gfx, 8, 8, 2, CYAN, "Hosts");
-    char line[40];
-    snprintf(line, sizeof(line), "Observed %u via ARP", scanner_->observedCount());
-    textLine(gfx, 8, 28, 1, WHITE, line);
-    char panel[40];
-    if (formatPersistPanel(panel, sizeof(panel), lastInventoryStore())) {
-      const InventoryStoreStatus status = lastInventoryStore().status;
-      const uint16_t ink = status == InventoryStoreStatus::Stored ? GREEN
-                           : status == InventoryStoreStatus::Failed ? RED
-                           : status == InventoryStoreStatus::Absent ? ORANGE
-                                                                    : DARKGREY;
-      textLine(gfx, 8, 462, 1, ink, panel);
-    }
-    return;
-  }
-  if (wifi_->phase() == WifiPhase::Results) {
-    textLine(gfx, 8, 8, 2, CYAN, "Networks");
-    return;
-  }
-  if (wifi_->phase() == WifiPhase::Password) {
-    textLine(gfx, 8, 8, 1, CYAN, "Password");
-    char ssidLine[40];
-    snprintf(ssidLine, sizeof(ssidLine), "%.20s", wifi_->selectedSsid());
-    textLine(gfx, 8, 24, 1, WHITE, ssidLine);
-    char mask[kMaxPassLen + 1];
-    maskPassword(mask, sizeof(mask), wifi_->passwordLength());
-    textLine(gfx, 8, 44, 2, WHITE, wifi_->passwordLength() == 0 ? "(empty)" : mask);
-    textLine(gfx, 8, 72, 1, wifi_->shiftOn() ? CYAN : DARKGREY, wifi_->shiftOn() ? "ABC" : "abc");
-    return;
-  }
-
-  textLine(gfx, 8, 8, 2, CYAN, "WiFi LAN");
-  char card[24];
-  if (formatScanCard(card, sizeof(card), scanner_->state(), wifi_->phase() == WifiPhase::Connected,
-                     scanner_->processedCount(), scanner_->candidateCount())) {
-    textLine(gfx, 8, 26, 1, CYAN, card);
-  }
-  textLine(gfx, 8, 36, 1, WHITE, wifi_->statusText());
-  if (wifi_->hasSavedNetwork()) {
-    char line[40];
-    snprintf(line, sizeof(line), "Saved %.18s", wifi_->savedSsid());
-    textLine(gfx, 8, 52, 1, WHITE, line);
+void ScannerUi::fillSnapshot(UiSnapshot& snapshot) const {
+  snapshot = UiSnapshot();
+  const WifiPhase phase = wifi_->phase();
+  if (phase == WifiPhase::Results) {
+    snapshot.phase = UiPhase::Results;
+  } else if (phase == WifiPhase::Password) {
+    snapshot.phase = UiPhase::Password;
+  } else if (showingSettings_) {
+    snapshot.phase = UiPhase::Settings;
+  } else if (showingHosts_) {
+    snapshot.phase = UiPhase::Hosts;
   } else {
-    textLine(gfx, 8, 52, 1, WHITE, "No saved network");
+    snapshot.phase = UiPhase::Home;
   }
-
-  char line[48];
-  if (wifi_->phase() == WifiPhase::Connected) {
-    const NetworkRange range = rangeFromStation();
-    char ip[16];
-    char mask[16];
-    char gateway[16];
-    char dns[16];
-    char network[16];
-    formatIp(range.address, ip, sizeof(ip));
-    formatIp(range.mask, mask, sizeof(mask));
-    formatIp(range.gateway, gateway, sizeof(gateway));
-    formatIp(range.dnsPrimary, dns, sizeof(dns));
-    formatIp(range.network, network, sizeof(network));
-    snprintf(line, sizeof(line), "SSID %.18s", WiFi.SSID().c_str());
-    textLine(gfx, 8, 146, 1, WHITE, line);
-    snprintf(line, sizeof(line), "IP %s", ip);
-    textLine(gfx, 8, 160, 1, WHITE, line);
-    snprintf(line, sizeof(line), "Mask %s", mask);
-    textLine(gfx, 8, 174, 1, WHITE, line);
-    snprintf(line, sizeof(line), "GW %s", gateway);
-    textLine(gfx, 8, 188, 1, WHITE, line);
-    snprintf(line, sizeof(line), "DNS %s", dns);
-    textLine(gfx, 8, 202, 1, WHITE, line);
-    if (range.valid) {
-      snprintf(line, sizeof(line), "Net %s/%u", network, range.prefix);
-      textLine(gfx, 8, 216, 1, GREEN, line);
-      snprintf(line, sizeof(line), "Usable %lu cap %lu", static_cast<unsigned long>(range.usableHosts),
-               static_cast<unsigned long>(range.futureScanCap));
-      textLine(gfx, 8, 230, 1, GREEN, line);
+  snapshot.saved = wifi_->hasSavedNetwork();
+  snapshot.shift = wifi_->shiftOn();
+  snapshot.keyboardPage = keyboardPage_;
+  snapshot.listPage = page_;
+  snapshot.scan = scanner_->state();
+  snapshot.profile = profile_;
+  if (snapshot.phase == UiPhase::Results) {
+    const int start = page_ * 6;
+    for (int row = 0; row < 6; ++row) {
+      const WifiAp* ap = wifi_->resultAt(start + row);
+      if (ap == nullptr) {
+        continue;
+      }
+      snapshot.rowPresent[row] = true;
+      copyLabel(snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]), ap->ssid);
+      snprintf(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), "%s %ld dBm", securityLabel(ap->secure),
+               static_cast<long>(ap->rssi));
+    }
+  } else if (snapshot.phase == UiPhase::Hosts) {
+    const int start = page_ * 6;
+    for (int row = 0; row < 6; ++row) {
+      const ObservedHost* host = scanner_->hostAt(static_cast<uint16_t>(start + row));
+      if (host == nullptr) {
+        continue;
+      }
+      snapshot.rowPresent[row] = true;
+      formatIpv4(host->ip, snapshot.rowLabel[row], sizeof(snapshot.rowLabel[row]));
+      formatHostDetail(snapshot.rowDetail[row], sizeof(snapshot.rowDetail[row]), host->nameSource, host->name,
+                       host->hasMac, host->mac);
+      formatOuiLine(snapshot.rowVendor[row], sizeof(snapshot.rowVendor[row]), host->ouiState, host->manufacturer);
+    }
+  } else if (snapshot.phase == UiPhase::Home) {
+    snapshot.showDashboard = true;
+    snprintf(snapshot.progressLabel, sizeof(snapshot.progressLabel), "Addr %u/%u", scanner_->processedCount(),
+             scanner_->candidateCount());
+    const unsigned long seconds = static_cast<unsigned long>(scanner_->elapsedMs() / 1000UL);
+    if (scanner_->hasCurrent()) {
+      char current[16];
+      formatIpv4(scanner_->currentAddress(), current, sizeof(current));
+      snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "%s %lus", current, seconds);
+    } else if (scanner_->hasLast()) {
+      char last[16];
+      formatIpv4(scanner_->lastAddress(), last, sizeof(last));
+      snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "last %s", last);
     } else {
-      textLine(gfx, 8, 216, 1, ORANGE, "Range unavailable");
+      snprintf(snapshot.progressDetail, sizeof(snapshot.progressDetail), "elapsed %lus", seconds);
     }
-  } else {
-    char banner[64];
-    if (formatScanBanner(banner, sizeof(banner), scanner_->state(), false, scanner_->processedCount(),
-                         scanner_->candidateCount(), scanner_->observedCount())) {
-      textLine(gfx, 8, 160, 1, DARKGREY, banner);
+    snprintf(snapshot.newestLabel, sizeof(snapshot.newestLabel), "Devices %u", scanner_->observedCount());
+    const ObservedHost* newest = scanner_->newest();
+    if (newest == nullptr) {
+      copyLabel(snapshot.newestDetail, sizeof(snapshot.newestDetail), "none yet");
+    } else {
+      formatIpv4(newest->ip, snapshot.newestDetail, sizeof(snapshot.newestDetail));
+      formatOuiLine(snapshot.newestVendor, sizeof(snapshot.newestVendor), newest->ouiState, newest->manufacturer);
     }
-  }
-
-  char panel[40];
-  if (formatPersistPanel(panel, sizeof(panel), lastInventoryStore())) {
-    const InventoryStoreStatus status = lastInventoryStore().status;
-    const uint16_t ink = status == InventoryStoreStatus::Stored ? GREEN
-                         : status == InventoryStoreStatus::Failed ? RED
-                         : status == InventoryStoreStatus::Absent ? ORANGE
-                                                                  : DARKGREY;
-    textLine(gfx, 8, 462, 1, ink, panel);
-  }
-  if (!deviceTouch().ready()) {
-    textLine(gfx, 8, 472, 1, RED, "Touch controller absent");
   }
 }
 
-void ScannerUi::paintControls() {
+UiPaintFrame ScannerUi::makeFrame(const UiSnapshot& snapshot, const UiControl* controls, int count) const {
+  UiPaintFrame frame;
+  switch (snapshot.phase) {
+    case UiPhase::Results:
+      frame.screen = UiPaintScreen::Results;
+      break;
+    case UiPhase::Password:
+      frame.screen = UiPaintScreen::Password;
+      break;
+    case UiPhase::Hosts:
+      frame.screen = UiPaintScreen::Hosts;
+      break;
+    case UiPhase::Settings:
+      frame.screen = UiPaintScreen::Settings;
+      break;
+    case UiPhase::Home:
+      frame.screen = UiPaintScreen::Home;
+      break;
+  }
+  frame.scan = static_cast<int>(scanner_->state());
+  frame.saved = wifi_->hasSavedNetwork();
+  frame.station = wifi_->phase() == WifiPhase::Connected;
+  frame.processed = scanner_->processedCount();
+  frame.candidates = scanner_->candidateCount();
+  frame.observed = scanner_->observedCount();
+  frame.elapsedSec = scanner_->elapsedMs() / 1000UL;
+  frame.page = page_;
+  frame.keyboardPage = keyboardPage_;
+  frame.shift = wifi_->shiftOn();
+  frame.passLen = wifi_->passwordLength();
+  frame.store = static_cast<int>(lastInventoryStore().status);
+  frame.profile = static_cast<int>(profile_);
+  copyLabel(frame.path, sizeof(frame.path), lastInventoryStore().path);
+  copyLabel(frame.status, sizeof(frame.status), wifi_->statusText());
+  copyLabel(frame.newest, sizeof(frame.newest), snapshot.newestLabel);
+  copyLabel(frame.newestDetail, sizeof(frame.newestDetail), snapshot.newestDetail);
+  uint32_t stamp = 2166136261u;
+  for (int row = 0; row < 6; ++row) {
+    stamp = mixText(stamp, snapshot.rowPresent[row] ? "1" : "0");
+    stamp = mixText(stamp, snapshot.rowLabel[row]);
+    stamp = mixText(stamp, snapshot.rowDetail[row]);
+    stamp = mixText(stamp, snapshot.rowVendor[row]);
+  }
+  frame.listStamp = stamp;
+  const int shown = remoteAck_.pending() ? remoteAck_.shownId() : press_.shownId();
+  frame.shownId = shown;
+  if (shown >= 0 && controls != nullptr) {
+    for (int i = 0; i < count; ++i) {
+      if (controls[i].id == shown) {
+        frame.shownY = controls[i].y;
+        frame.shownH = controls[i].h;
+        break;
+      }
+    }
+  } else if (drawnValid_) {
+    frame.shownY = drawn_.shownY;
+    frame.shownH = drawn_.shownH;
+  }
+  return frame;
+}
+
+void ScannerUi::paintMasked(uint32_t mask, const UiSnapshot& snapshot, const UiControl* controls, int count, int shownId) {
+  if (mask == UiRegionInPlace) {
+    Clip panel{&deviceDisplay().panel(), 0, 0, 0, 0, kPanelWidth, kPanelHeight};
+    for (int i = 0; i < count; ++i) {
+      if (controls[i].id == drawn_.shownId || controls[i].id == shownId) {
+        paintControl(panel, controls[i], controls[i].id == shownId);
+      }
+    }
+    return;
+  }
+  static const uint32_t kBits[] = {UiRegionHeader, UiRegionWifiActions, UiRegionNetwork, UiRegionProgress,
+                                    UiRegionLatest, UiRegionControls,    UiRegionFooter};
+  for (uint32_t bit : kBits) {
+    if ((mask & bit) == 0) {
+      continue;
+    }
+    const UiRegionRect rect = uiRegionRect(bit);
+    if (rect.h <= 0 || rect.h > kUiSpriteH) {
+      continue;
+    }
+    Arduino_GFX* gfx = &deviceDisplay().panel();
+    int oy = 0;
+    if (gSprite != nullptr) {
+      gSprite->fillScreen(BLACK);
+      gfx = gSprite;
+      oy = rect.y;
+    } else {
+      deviceDisplay().panel().fillRect(rect.x, rect.y, rect.w, rect.h, BLACK);
+    }
+    Clip clip{gfx, 0, oy, rect.x, rect.y, rect.x + rect.w, rect.y + rect.h};
+    if (bit == UiRegionHeader) {
+      if (snapshot.phase == UiPhase::Hosts) {
+        textClip(clip, 8, 8, 2, CYAN, "Hosts");
+        char line[40];
+        snprintf(line, sizeof(line), "Observed %u via ARP", scanner_->observedCount());
+        textClip(clip, 8, 32, 1, WHITE, line);
+      } else if (snapshot.phase == UiPhase::Results) {
+        textClip(clip, 8, 8, 2, CYAN, "Networks");
+      } else if (snapshot.phase == UiPhase::Password) {
+        textClip(clip, 8, 8, 2, CYAN, "Password");
+        char ssidLine[40];
+        snprintf(ssidLine, sizeof(ssidLine), "%.20s", wifi_->selectedSsid());
+        textClip(clip, 8, 28, 1, WHITE, ssidLine);
+        char mask[80];
+        maskPassword(mask, sizeof(mask), wifi_->passwordLength());
+        textClip(clip, 8, 40, 1, WHITE, wifi_->passwordLength() == 0 ? "(empty)" : mask);
+      } else if (snapshot.phase == UiPhase::Settings) {
+        textClip(clip, 8, 8, 2, CYAN, "Settings");
+        textClip(clip, 8, 32, 1, WHITE, "Service scan");
+        textClip(clip, 8, 48, 1, DARKGREY, "Saved on this scanner");
+      } else {
+        // Screen names stay short. The product title fits this home header:
+        // size 2 is 12 px per character, 16 characters, origin x=8, panel 222.
+        textClip(clip, 8, 8, 2, CYAN, "WiFi-LAN-Scanner");
+        textClip(clip, 8, 36, 1, WHITE, wifi_->statusText());
+        if (wifi_->hasSavedNetwork()) {
+          char line[40];
+          snprintf(line, sizeof(line), "Saved %.18s", wifi_->savedSsid());
+          textClip(clip, 8, 52, 1, WHITE, line);
+        }
+      }
+    } else if (bit == UiRegionNetwork && snapshot.phase == UiPhase::Home) {
+      char line[48];
+      if (wifi_->phase() == WifiPhase::Connected) {
+        const NetworkRange range = rangeFromStation();
+        char ip[16];
+        char mask[16];
+        char gateway[16];
+        char dns[16];
+        char network[16];
+        formatIp(range.address, ip, sizeof(ip));
+        formatIp(range.mask, mask, sizeof(mask));
+        formatIp(range.gateway, gateway, sizeof(gateway));
+        formatIp(range.dnsPrimary, dns, sizeof(dns));
+        formatIp(range.network, network, sizeof(network));
+        snprintf(line, sizeof(line), "SSID %.18s", WiFi.SSID().c_str());
+        textClip(clip, 8, 148, 1, WHITE, line);
+        snprintf(line, sizeof(line), "IP %s", ip);
+        textClip(clip, 8, 160, 1, WHITE, line);
+        snprintf(line, sizeof(line), "Mask %s", mask);
+        textClip(clip, 8, 174, 1, WHITE, line);
+        snprintf(line, sizeof(line), "GW %s", gateway);
+        textClip(clip, 8, 188, 1, WHITE, line);
+        snprintf(line, sizeof(line), "DNS %s", dns);
+        textClip(clip, 8, 202, 1, WHITE, line);
+        if (range.valid) {
+          snprintf(line, sizeof(line), "Net %s/%u", network, range.prefix);
+          textClip(clip, 8, 216, 1, GREEN, line);
+          snprintf(line, sizeof(line), "Usable %lu cap %lu", static_cast<unsigned long>(range.usableHosts),
+                   static_cast<unsigned long>(range.futureScanCap));
+          textClip(clip, 8, 228, 1, GREEN, line);
+        } else {
+          textClip(clip, 8, 216, 1, ORANGE, "Range unavailable");
+        }
+      } else {
+        char banner[64];
+        if (formatScanBanner(banner, sizeof(banner), scanner_->state(), false, scanner_->processedCount(),
+                             scanner_->candidateCount(), scanner_->observedCount())) {
+          textClip(clip, 8, 160, 1, DARKGREY, banner);
+        }
+      }
+    } else if (bit == UiRegionFooter && (snapshot.phase == UiPhase::Home || snapshot.phase == UiPhase::Hosts)) {
+      char panel[40];
+      if (formatPersistPanel(panel, sizeof(panel), lastInventoryStore())) {
+        const InventoryStoreStatus status = lastInventoryStore().status;
+        const uint16_t ink = status == InventoryStoreStatus::Stored    ? GREEN
+                             : status == InventoryStoreStatus::Failed   ? RED
+                             : status == InventoryStoreStatus::Absent   ? ORANGE
+                                                                        : DARKGREY;
+        textClip(clip, 8, 462, 1, ink, panel);
+      }
+      if (snapshot.phase == UiPhase::Home && !deviceTouch().ready()) {
+        textClip(clip, 8, 470, 1, RED, "Touch controller absent");
+      }
+    }
+    for (int i = 0; i < count; ++i) {
+      paintControl(clip, controls[i], controls[i].id == shownId);
+    }
+    if (bit == UiRegionProgress && snapshot.phase == UiPhase::Home) {
+      paintAddressBar(clip, scanner_->processedCount(), scanner_->candidateCount());
+    }
+    if (gSprite != nullptr) {
+      deviceDisplay().panel().draw16bitRGBBitmap(rect.x, rect.y, gSprite->getFramebuffer(), rect.w, rect.h);
+    }
+  }
+}
+
+void ScannerUi::servicePaint() {
   if (!deviceDisplay().ready() || wifi_ == nullptr || scanner_ == nullptr) {
     return;
   }
+  UiSnapshot snapshot;
+  fillSnapshot(snapshot);
   int cap = 0;
   UiControl* controls = uiScratchControls(&cap);
-  const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
-  Arduino_GFX& gfx = deviceDisplay().panel();
+  const int count = collectUiControls(controls, cap, snapshot);
+  const UiPaintFrame frame = makeFrame(snapshot, controls, count);
+  const uint32_t mask = drawnValid_ ? dirtyRegions(drawn_, frame) : UiRegionAll;
+  if (mask == 0) {
+    return;
+  }
   const int shown = remoteAck_.pending() ? remoteAck_.shownId() : press_.shownId();
+  paintMasked(mask, snapshot, controls, count, shown);
+  const bool full = (mask & UiRegionAll) == UiRegionAll;
+  const uint32_t now = millis();
+  const bool progressOnly = mask == UiRegionProgress || mask == (UiRegionProgress | UiRegionNetwork);
+  const bool suppress = (!full && progressOnly && lastLoggedMask_ == mask && now - lastPaintLogMs_ < 1000) ||
+                        (!full && !progressOnly && lastLoggedMask_ == mask && now - lastPaintLogMs_ < 500);
+  if (!suppress) {
+    Serial.printf("WLS ui paint full=%d mask=%lu\n", full ? 1 : 0, static_cast<unsigned long>(mask));
+    lastPaintLogMs_ = now;
+    lastLoggedMask_ = mask;
+  }
+  drawn_ = frame;
+  drawnValid_ = true;
+}
+
+void ScannerUi::paintAckNow(int controlId) {
+  if (!deviceDisplay().ready() || wifi_ == nullptr || scanner_ == nullptr) {
+    return;
+  }
+  UiSnapshot snapshot;
+  fillSnapshot(snapshot);
+  int cap = 0;
+  UiControl* controls = uiScratchControls(&cap);
+  const int count = collectUiControls(controls, cap, snapshot);
+  const int shown = remoteAck_.pending() ? remoteAck_.shownId() : press_.shownId();
+  Clip panel{&deviceDisplay().panel(), 0, 0, 0, 0, kPanelWidth, kPanelHeight};
   for (int i = 0; i < count; ++i) {
-    paintControl(gfx, controls[i], controls[i].id == shown);
+    if (controls[i].id == controlId) {
+      paintControl(panel, controls[i], controls[i].id == shown);
+      if (drawnValid_) {
+        drawn_.shownId = shown;
+        drawn_.shownY = controls[i].y;
+        drawn_.shownH = controls[i].h;
+      }
+      break;
+    }
   }
 }
 
-void ScannerUi::draw(bool full) {
-  if (!deviceDisplay().ready()) {
+void ScannerUi::noteProfile(ServiceProfile next) {
+  if (next == profile_) {
     return;
   }
-  if (full) {
-    deviceDisplay().panel().fillScreen(BLACK);
-  }
-  drawChrome();
-  paintControls();
-  drawnPhase_ = wifi_->phase();
-  drawnScan_ = scanner_->state();
-  drawnShift_ = wifi_->shiftOn();
-  drawnPassLen_ = wifi_->passwordLength();
-  drawnSaved_ = wifi_->hasSavedNetwork();
-  drawnPage_ = page_;
-  drawnKeyboard_ = keyboardPage_;
-  drawnObserved_ = scanner_->observedCount();
-  drawnProcessed_ = scanner_->processedCount();
-  drawnHosts_ = showingHosts_;
-  drawnStore_ = lastInventoryStore().status;
-  snprintf(drawnPath_, sizeof(drawnPath_), "%s", lastInventoryStore().path);
-  lastDrawMs_ = millis();
-  force_ = false;
+  profile_ = next;
+  saveServiceProfile(profile_);
+  Serial.printf("WLS profile=%s source=set\n", serviceProfileToken(profile_));
 }
 
 int ScannerUi::hitControl(int x, int y) const {
+  UiSnapshot snapshot;
+  fillSnapshot(snapshot);
   int cap = 0;
   UiControl* controls = uiScratchControls(&cap);
-  const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
+  const int count = collectUiControls(controls, cap, snapshot);
   return hitUiControl(controls, count, x, y);
 }
 
 void ScannerUi::dispatch(int id) {
   if (id >= IdKeyBase && id < IdRow0) {
+    UiSnapshot snapshot;
+    fillSnapshot(snapshot);
     int cap = 0;
     UiControl* controls = uiScratchControls(&cap);
-    const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
+    const int count = collectUiControls(controls, cap, snapshot);
     for (int i = 0; i < count; ++i) {
       if (controls[i].id == id && controls[i].value != 0) {
         wifi_->typeChar(controls[i].value);
@@ -378,12 +637,15 @@ bool ScannerUi::executeRemote(AppAction action, int rowOffset) {
   }
   AppView view;
   view.showingHosts = showingHosts_;
-  view.resultsOpen = !showingHosts_ && wifi_->phase() == WifiPhase::Results;
+  view.showingSettings = showingSettings_;
+  view.entryOpen = wifi_->phase() == WifiPhase::Password;
+  view.resultsOpen = wifi_->phase() == WifiPhase::Results;
   view.page = page_;
   view.keyboardPage = keyboardPage_;
   view.resultCount = wifi_->resultCount();
   view.observedCount = scanner_->observedCount();
   view.rowOffset = rowOffset;
+  view.profile = profile_;
   AppHooks hooks;
   hooks.findNetworks = hookFind;
   hooks.forgetNetwork = hookForget;
@@ -396,9 +658,12 @@ bool ScannerUi::executeRemote(AppAction action, int rowOffset) {
   hooks.context = wifi_;
   applyAppAction(action, view, *scanner_, &hooks);
   showingHosts_ = view.showingHosts;
+  showingSettings_ = view.showingSettings;
   page_ = view.page;
   keyboardPage_ = view.keyboardPage;
-  force_ = true;
+  if (view.profile != profile_) {
+    noteProfile(view.profile);
+  }
   return true;
 }
 
@@ -426,13 +691,11 @@ bool ScannerUi::applyRemote(AppAction action, int rowOffset) {
   if (action == AppAction::SelectRow && (rowOffset < 0 || rowOffset > 5)) {
     return false;
   }
-  if (remoteAck_.pending()) {
-    remoteBusy_ = true;
-    return false;
-  }
+  UiSnapshot snapshot;
+  fillSnapshot(snapshot);
   int cap = 0;
   UiControl* controls = uiScratchControls(&cap);
-  const int count = gatherControls(controls, cap, *wifi_, *scanner_, page_, keyboardPage_, showingHosts_);
+  const int count = collectUiControls(controls, cap, snapshot);
   const int id = visibleControlForAction(action, rowOffset, controls, count);
   if (id >= 0) {
     bool latched = false;
@@ -453,10 +716,14 @@ bool ScannerUi::applyRemote(AppAction action, int rowOffset) {
     const ControlFace face = controlFace(latched, true);
     Serial.printf("WLS ui ack arm control=%s face=%s ms=%lu\n", uiControlName(id), faceToken(face),
                   static_cast<unsigned long>(ActionAck::kAckMs));
-    paintControls();
+    paintAckNow(id);
     return true;
   }
-  Serial.printf("WLS ui ack skip action=%s\n", actionToken(action));
+  const char* token = actionToken(action);
+  if (action == AppAction::SetProfile && rowOffset >= 0 && rowOffset <= 2) {
+    token = serviceProfileToken(static_cast<ServiceProfile>(rowOffset));
+  }
+  Serial.printf("WLS ui ack skip action=%s\n", token);
   return executeRemote(action, rowOffset);
 }
 
@@ -467,11 +734,14 @@ void ScannerUi::captureState(AppState& out) const {
   }
   AppView view;
   view.showingHosts = showingHosts_;
-  view.resultsOpen = !showingHosts_ && wifi_->phase() == WifiPhase::Results;
+  view.showingSettings = showingSettings_;
+  view.entryOpen = wifi_->phase() == WifiPhase::Password;
+  view.resultsOpen = wifi_->phase() == WifiPhase::Results;
   view.page = page_;
   view.keyboardPage = keyboardPage_;
   view.resultCount = wifi_->resultCount();
   view.observedCount = scanner_->observedCount();
+  view.profile = profile_;
   AppWifiView wifi;
   wifi.phase = phaseToken(wifi_->phase());
   const char* ssid = wifi_->hasSavedNetwork() ? wifi_->savedSsid() : wifi_->selectedSsid();
@@ -480,7 +750,7 @@ void ScannerUi::captureState(AppState& out) const {
   wifi.shift = wifi_->shiftOn();
   wifi.entry = wifi_->phase() == WifiPhase::Password;
   wifi.results = wifi_->phase() == WifiPhase::Results;
-  fillAppState(out, view, *scanner_, wifi);
+  fillAppState(out, view, *scanner_, wifi, profile_);
   out.ack[0] = '\0';
   if (remoteAck_.pending()) {
     snprintf(out.ack, sizeof(out.ack), "%s", uiControlName(remoteAck_.shownId()));
@@ -520,23 +790,6 @@ void ScannerUi::loop() {
   if (step.fire) {
     noteTouch("up", step.fireId, x, y, false);
     dispatch(step.fireId);
-    force_ = true;
   }
-
-  const InventoryStoreResult& storedNow = lastInventoryStore();
-  const bool storeChanged = storedNow.status != drawnStore_ || strcmp(storedNow.path, drawnPath_) != 0;
-  const bool contentChanged = force_ || storeChanged || wifi_->phase() != drawnPhase_ || scanner_->state() != drawnScan_ ||
-                              wifi_->shiftOn() != drawnShift_ || wifi_->passwordLength() != drawnPassLen_ ||
-                              wifi_->hasSavedNetwork() != drawnSaved_ || page_ != drawnPage_ ||
-                              keyboardPage_ != drawnKeyboard_ || showingHosts_ != drawnHosts_ ||
-                              scanner_->observedCount() != drawnObserved_ ||
-                              scanner_->processedCount() != drawnProcessed_;
-  const bool pulse = (wifi_->phase() == WifiPhase::Connecting || wifi_->phase() == WifiPhase::Scanning ||
-                      scanner_->state() == ScanState::Scanning) &&
-                     millis() - lastDrawMs_ > 800;
-  if (contentChanged || pulse) {
-    draw(true);
-  } else if (step.visualChanged) {
-    paintControls();
-  }
+  servicePaint();
 }

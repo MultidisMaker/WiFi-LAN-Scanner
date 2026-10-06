@@ -269,18 +269,22 @@ struct NamedAction {
   const char* name;
   AppAction action;
   bool row;
+  int argument;
 };
 
 const NamedAction kActions[] = {
-    {"find", AppAction::FindNetworks, false}, {"forget", AppAction::ForgetNetwork, false},
-    {"start", AppAction::StartScan, false},   {"pause", AppAction::PauseScan, false},
-    {"resume", AppAction::ResumeScan, false}, {"stop", AppAction::StopScan, false},
-    {"reset", AppAction::ResetScan, false},   {"hosts", AppAction::OpenHosts, false},
-    {"back", AppAction::Back, false},         {"next", AppAction::NextPage, false},
-    {"prev", AppAction::PrevPage, false},     {"shift", AppAction::Shift, false},
-    {"page", AppAction::KeyboardPage, false}, {"del", AppAction::Backspace, false},
-    {"ok", AppAction::SubmitPassword, false}, {"close", AppAction::CancelPassword, false},
-    {"row", AppAction::SelectRow, true},
+    {"find", AppAction::FindNetworks, false, -1}, {"forget", AppAction::ForgetNetwork, false, -1},
+    {"start", AppAction::StartScan, false, -1},   {"pause", AppAction::PauseScan, false, -1},
+    {"resume", AppAction::ResumeScan, false, -1}, {"stop", AppAction::StopScan, false, -1},
+    {"reset", AppAction::ResetScan, false, -1},   {"hosts", AppAction::OpenHosts, false, -1},
+    {"settings", AppAction::OpenSettings, false, -1},
+    {"basic", AppAction::SetProfile, false, 0},   {"common", AppAction::SetProfile, false, 1},
+    {"detailed", AppAction::SetProfile, false, 2},
+    {"back", AppAction::Back, false, -1},         {"next", AppAction::NextPage, false, -1},
+    {"prev", AppAction::PrevPage, false, -1},     {"shift", AppAction::Shift, false, -1},
+    {"page", AppAction::KeyboardPage, false, -1}, {"del", AppAction::Backspace, false, -1},
+    {"ok", AppAction::SubmitPassword, false, -1}, {"close", AppAction::CancelPassword, false, -1},
+    {"row", AppAction::SelectRow, true, -1},
 };
 
 const NamedAction* findAction(const char* name) {
@@ -300,10 +304,20 @@ const char* screenToken(AppScreen screen) {
       return "entry";
     case AppScreen::Hosts:
       return "hosts";
+    case AppScreen::Settings:
+      return "settings";
     case AppScreen::Home:
       return "home";
   }
   return "home";
+}
+
+const char* profileWire(const AppState& state) {
+  if (strcmp(state.profile, "basic") == 0 || strcmp(state.profile, "common") == 0 ||
+      strcmp(state.profile, "detailed") == 0) {
+    return state.profile;
+  }
+  return "common";
 }
 
 int writeState(char* out, int outCap, const AppState& state) {
@@ -343,7 +357,9 @@ int writeState(char* out, int outCap, const AppState& state) {
   addInt(buf, state.canPause ? 1 : 0);
   addRaw(buf, ",\"canResume\":");
   addInt(buf, state.canResume ? 1 : 0);
-  addRaw(buf, ",\"ack\":\"");
+  addRaw(buf, ",\"profile\":\"");
+  addEsc(buf, profileWire(state));
+  addRaw(buf, "\",\"ack\":\"");
   addEsc(buf, state.ack);
   addRaw(buf, "\"}");
   if (!buf.ok) {
@@ -493,7 +509,7 @@ int remoteSubmit(RemoteSession* session, const char* line, char* out, int outCap
       return writeErr(out, outCap, "range");
     }
     if (services == nullptr || services->apply == nullptr ||
-        !services->apply(services->context, named->action, named->row ? index : -1)) {
+        !services->apply(services->context, named->action, named->row ? index : named->argument)) {
       const bool busy = services != nullptr && services->rejectedBusy != nullptr &&
                         services->rejectedBusy(services->context);
       char body[96];

@@ -21,8 +21,10 @@
 #include "ScanClock.h"
 #include "UiStatus.h"
 #include "ScannerController.h"
+#include "ServiceProfile.h"
 #include "UiModel.h"
 #include "UiPress.h"
+#include "UiRender.h"
 
 static uint32_t gScanNow = 0;
 
@@ -827,7 +829,7 @@ static void rememberPick(void* context, int index) {
 static void act(ScannerController& scanner, AppView& view, bool viaControl, int id, AppAction direct, const AppHooks* hooks) {
   int row = -1;
   const AppAction chosen = viaControl ? actionFromControl(id, &row) : direct;
-  if (chosen == AppAction::SelectRow) {
+  if (chosen == AppAction::SelectRow || chosen == AppAction::SetProfile) {
     view.rowOffset = row;
   }
   applyAppAction(chosen, view, scanner, hooks);
@@ -1224,7 +1226,7 @@ static bool worldApply(void* context, AppAction action, int rowOffset) {
   world->applies += 1;
   world->last = action;
   world->lastRow = rowOffset;
-  if (action == AppAction::SelectRow) {
+  if (action == AppAction::SelectRow || action == AppAction::SetProfile) {
     world->view->rowOffset = rowOffset;
   }
   applyAppAction(action, *world->view, *world->scanner, nullptr);
@@ -1248,7 +1250,7 @@ static void worldLoad(void* context, AppState* out) {
   wifi.phase = "connected";
   wifi.ssid = "TFMiddle";
   wifi.saved = false;
-  fillAppState(*out, *world->view, *world->scanner, wifi);
+  fillAppState(*out, *world->view, *world->scanner, wifi, world->view->profile);
 }
 
 static int worldRows(void* context) {
@@ -1632,23 +1634,69 @@ void test_networks_back_returns_home(void) {
   TEST_ASSERT_TRUE(strcmp(nav.phase, "results") == 0);
 }
 
+static bool controlPresent(const UiControl* controls, int count, int id) {
+  for (int i = 0; i < count; ++i) {
+    if (controls[i].id == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void test_remote_visual_ack_matches_touch_face(void) {
   UiControl controls[16];
   UiSnapshot home;
   home.phase = UiPhase::Home;
   home.showDashboard = true;
+  home.scan = ScanState::Idle;
   int count = collectUiControls(controls, 16, home);
   TEST_ASSERT_TRUE(visibleControlForAction(AppAction::FindNetworks, -1, controls, count) == IdFind);
   TEST_ASSERT_TRUE(visibleControlForAction(AppAction::Back, -1, controls, count) == -1);
   TEST_ASSERT_TRUE(visibleControlForAction(AppAction::StartScan, -1, controls, count) == IdStart);
-  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::PauseScan, -1, controls, count) == IdPause);
-  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::ResumeScan, -1, controls, count) == IdResume);
-  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::StopScan, -1, controls, count) == IdStop);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::PauseScan, -1, controls, count) == -1);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::ResumeScan, -1, controls, count) == -1);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::StopScan, -1, controls, count) == -1);
   TEST_ASSERT_TRUE(visibleControlForAction(AppAction::ResetScan, -1, controls, count) == IdReset);
   TEST_ASSERT_TRUE(visibleControlForAction(AppAction::OpenHosts, -1, controls, count) == IdHosts);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::OpenSettings, -1, controls, count) == IdSettings);
   TEST_ASSERT_TRUE(visibleControlForAction(AppAction::NextPage, -1, controls, count) == -1);
   TEST_ASSERT_TRUE(visibleControlForAction(AppAction::PrevPage, -1, controls, count) == -1);
   TEST_ASSERT_TRUE(visibleControlForAction(AppAction::SelectRow, 0, controls, count) == -1);
+  TEST_ASSERT_TRUE(controlPresent(controls, count, IdFind));
+  for (int i = 0; i < count; ++i) {
+    if (controls[i].id == IdFind) {
+      TEST_ASSERT_TRUE(controls[i].x == 8 && controls[i].y == 72 && controls[i].w == 206 && controls[i].h == 34);
+    }
+    if (controls[i].id == IdReset) {
+      TEST_ASSERT_TRUE(controls[i].dim && !controls[i].secondary);
+    }
+    if (controls[i].id == IdSettings) {
+      TEST_ASSERT_TRUE(controls[i].secondary && !controls[i].dim);
+    }
+    if (controls[i].id == IdStart) {
+      TEST_ASSERT_TRUE(!controls[i].dim && !controls[i].secondary);
+    }
+  }
+
+  UiSnapshot scanning = home;
+  scanning.scan = ScanState::Scanning;
+  count = collectUiControls(controls, 16, scanning);
+  TEST_ASSERT_TRUE(controlPresent(controls, count, IdPause));
+  TEST_ASSERT_TRUE(controlPresent(controls, count, IdStop));
+  TEST_ASSERT_TRUE(!controlPresent(controls, count, IdResume));
+  TEST_ASSERT_TRUE(!controlPresent(controls, count, IdStart));
+  TEST_ASSERT_TRUE(!controlPresent(controls, count, IdSettings));
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::PauseScan, -1, controls, count) == IdPause);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::ResumeScan, -1, controls, count) == -1);
+
+  UiSnapshot paused = home;
+  paused.scan = ScanState::Paused;
+  count = collectUiControls(controls, 16, paused);
+  TEST_ASSERT_TRUE(controlPresent(controls, count, IdResume));
+  TEST_ASSERT_TRUE(controlPresent(controls, count, IdStop));
+  TEST_ASSERT_TRUE(!controlPresent(controls, count, IdPause));
+  TEST_ASSERT_TRUE(!controlPresent(controls, count, IdStart));
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::ResumeScan, -1, controls, count) == IdResume);
 
   UiSnapshot networks;
   networks.phase = UiPhase::Results;
@@ -1728,6 +1776,207 @@ void test_remote_action_busy_result(void) {
   TEST_ASSERT_TRUE(session.link == RemoteLink::ConnectedUsb);
 }
 
+void test_dirty_regions_and_progress(void) {
+  TEST_ASSERT_TRUE(progressPercent(0, 0) == 0);
+  TEST_ASSERT_TRUE(progressPercent(0, 256) == 0);
+  TEST_ASSERT_TRUE(progressPercent(128, 256) == 50);
+  TEST_ASSERT_TRUE(progressPercent(1, 256) == 0);
+  TEST_ASSERT_TRUE(progressPercent(300, 256) == 100);
+
+  int covered = 0;
+  static const uint32_t bits[] = {UiRegionHeader, UiRegionWifiActions, UiRegionNetwork, UiRegionProgress,
+                                   UiRegionLatest, UiRegionControls,    UiRegionFooter};
+  for (uint32_t bit : bits) {
+    const UiRegionRect rect = uiRegionRect(bit);
+    TEST_ASSERT_TRUE(rect.w == kPanelWidth);
+    TEST_ASSERT_TRUE(rect.h > 0 && rect.h <= kUiSpriteH);
+    covered += rect.h;
+  }
+  TEST_ASSERT_TRUE(covered == kPanelHeight);
+  const UiRegionRect progress = uiRegionRect(UiRegionProgress);
+  TEST_ASSERT_TRUE(progress.y == 240 && progress.h == 46);
+  const UiRegionRect findBand = uiRegionRect(UiRegionWifiActions);
+  TEST_ASSERT_TRUE(72 >= findBand.y && 72 + 34 <= findBand.y + findBand.h);
+
+  UiPaintFrame prev;
+  UiPaintFrame next = prev;
+  next.processed = 2;
+  next.candidates = 256;
+  const uint32_t progressOnly = dirtyRegions(prev, next);
+  TEST_ASSERT_TRUE(progressOnly == (UiRegionProgress | UiRegionNetwork));
+  TEST_ASSERT_TRUE((progressOnly & UiRegionControls) == 0);
+  TEST_ASSERT_TRUE((progressOnly & UiRegionHeader) == 0);
+
+  next = prev;
+  next.station = true;
+  prev.station = true;
+  next.processed = 4;
+  next.candidates = 8;
+  TEST_ASSERT_TRUE(dirtyRegions(prev, next) == UiRegionProgress);
+
+  next = prev;
+  next.observed = 3;
+  snprintf(next.newest, sizeof(next.newest), "10.0.0.1");
+  const uint32_t latest = dirtyRegions(prev, next);
+  TEST_ASSERT_TRUE((latest & UiRegionLatest) != 0);
+  TEST_ASSERT_TRUE((latest & UiRegionProgress) == 0);
+  TEST_ASSERT_TRUE((latest & UiRegionControls) == 0);
+
+  next = prev;
+  next.shownId = IdFind;
+  next.shownY = 72;
+  next.shownH = 34;
+  TEST_ASSERT_TRUE(dirtyRegions(prev, next) == UiRegionWifiActions);
+
+  next = prev;
+  next.screen = UiPaintScreen::Results;
+  TEST_ASSERT_TRUE(dirtyRegions(prev, next) == UiRegionAll);
+
+  next = prev;
+  next.screen = UiPaintScreen::Settings;
+  next.shownId = IdProfileBasic;
+  next.shownY = 78;
+  next.shownH = 60;
+  prev.screen = UiPaintScreen::Settings;
+  TEST_ASSERT_TRUE(dirtyRegions(prev, next) == UiRegionInPlace);
+
+  next = prev;
+  next.profile = 0;
+  TEST_ASSERT_TRUE(dirtyRegions(prev, next) == UiRegionAll);
+}
+
+static int gProfileSets = 0;
+static int gProfileWhich = -1;
+
+static void rememberProfile(void* context, int which) {
+  (void)context;
+  gProfileSets += 1;
+  gProfileWhich = which;
+}
+
+void test_settings_and_service_profile(void) {
+  TEST_ASSERT_TRUE(defaultServiceProfile() == ServiceProfile::Common);
+  const ServiceProfileValue missing = parseServiceProfile(nullptr);
+  TEST_ASSERT_TRUE(!missing.valid && missing.profile == ServiceProfile::Common);
+  const ServiceProfileValue empty = parseServiceProfile("");
+  TEST_ASSERT_TRUE(!empty.valid && empty.profile == ServiceProfile::Common);
+  const ServiceProfileValue junk = parseServiceProfile("probe");
+  TEST_ASSERT_TRUE(!junk.valid && junk.profile == ServiceProfile::Common);
+  const ServiceProfileValue basic = parseServiceProfile("basic");
+  TEST_ASSERT_TRUE(basic.valid && basic.profile == ServiceProfile::Basic);
+  TEST_ASSERT_EQUAL_STRING("Basic / fast", serviceProfileLabel(ServiceProfile::Basic));
+  TEST_ASSERT_EQUAL_STRING("Common / recommended", serviceProfileLabel(ServiceProfile::Common));
+  TEST_ASSERT_EQUAL_STRING("Detailed / slower", serviceProfileLabel(ServiceProfile::Detailed));
+
+  UiSnapshot settings;
+  settings.phase = UiPhase::Settings;
+  settings.profile = ServiceProfile::Common;
+  UiControl controls[8];
+  int count = collectUiControls(controls, 8, settings);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::SetProfile, 1, controls, count) == IdProfileCommon);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::SetProfile, 0, controls, count) == IdProfileBasic);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::Back, -1, controls, count) == IdBack);
+  TEST_ASSERT_TRUE(visibleControlForAction(AppAction::FindNetworks, -1, controls, count) == -1);
+  bool commonLatched = false;
+  bool basicLatched = false;
+  for (int i = 0; i < count; ++i) {
+    if (controls[i].id == IdProfileCommon) {
+      commonLatched = controls[i].latched;
+      TEST_ASSERT_EQUAL_STRING("Common / recommended", controls[i].label);
+    }
+    if (controls[i].id == IdProfileBasic) {
+      basicLatched = controls[i].latched;
+    }
+    if (controls[i].id == IdBack) {
+      TEST_ASSERT_TRUE(controls[i].y == 410 && controls[i].w == 210 && controls[i].h == 40);
+    }
+  }
+  TEST_ASSERT_TRUE(commonLatched && !basicLatched);
+
+  NavTrace nav{0, 0, 0, "home"};
+  AppHooks hooks;
+  hooks.closeResults = navClose;
+  hooks.cancelPassword = navCancel;
+  hooks.setProfile = rememberProfile;
+  hooks.context = &nav;
+  ScannerController scanner;
+  AppView settingsView;
+  settingsView.showingSettings = true;
+  settingsView.page = 2;
+  settingsView.resultsOpen = true;
+  act(scanner, settingsView, true, IdBack, AppAction::Back, &hooks);
+  TEST_ASSERT_TRUE(!settingsView.showingSettings && settingsView.page == 0);
+  TEST_ASSERT_TRUE(nav.closes == 0 && nav.cancels == 0);
+
+  AppView blocked;
+  blocked.resultsOpen = true;
+  act(scanner, blocked, true, IdSettings, AppAction::OpenSettings, &hooks);
+  TEST_ASSERT_TRUE(!blocked.showingSettings);
+
+  AppView home;
+  act(scanner, home, true, IdSettings, AppAction::OpenSettings, &hooks);
+  TEST_ASSERT_TRUE(home.showingSettings && !home.showingHosts);
+  act(scanner, home, true, IdHosts, AppAction::OpenHosts, &hooks);
+  TEST_ASSERT_TRUE(home.showingHosts && !home.showingSettings);
+  act(scanner, home, true, IdBack, AppAction::Back, &hooks);
+  TEST_ASSERT_TRUE(!home.showingHosts);
+
+  AppView picked;
+  gProfileSets = 0;
+  gProfileWhich = -1;
+  act(scanner, picked, true, IdProfileDetailed, AppAction::SetProfile, &hooks);
+  TEST_ASSERT_TRUE(picked.profile == ServiceProfile::Detailed);
+  TEST_ASSERT_TRUE(gProfileSets == 1 && gProfileWhich == 2);
+  picked.rowOffset = -1;
+  applyAppAction(AppAction::SetProfile, picked, scanner, &hooks);
+  TEST_ASSERT_TRUE(picked.profile == ServiceProfile::Detailed);
+  TEST_ASSERT_TRUE(gProfileSets == 1);
+
+  AppState state;
+  AppWifiView wifi;
+  wifi.phase = "idle";
+  wifi.ssid = "TFMiddle";
+  fillAppState(state, picked, scanner, wifi, picked.profile);
+  TEST_ASSERT_EQUAL_STRING("detailed", state.profile);
+  TEST_ASSERT_TRUE(state.screen == AppScreen::Home);
+  char line[240];
+  TEST_ASSERT_TRUE(formatAppStateLine(line, static_cast<int>(sizeof(line)), state) > 0);
+  TEST_ASSERT_TRUE(strstr(line, "password") == nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "psk") == nullptr);
+  TEST_ASSERT_TRUE(strstr(line, "passphrase") == nullptr);
+
+  picked.showingSettings = true;
+  fillAppState(state, picked, scanner, wifi, picked.profile);
+  TEST_ASSERT_TRUE(state.screen == AppScreen::Settings);
+  TEST_ASSERT_TRUE(formatAppStateLine(line, static_cast<int>(sizeof(line)), state) > 0);
+  TEST_ASSERT_TRUE(strstr(line, "screen=settings") != nullptr);
+
+  RemoteWorld world;
+  world.scanner = &scanner;
+  world.view = &picked;
+  picked.showingSettings = false;
+  picked.profile = ServiceProfile::Common;
+  RemoteSession session;
+  char out[640];
+  requireHello(session, world);
+  int n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_STATE\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(n > 0 && n < 576);
+  TEST_ASSERT_TRUE(strstr(out, "\"profile\":\"common\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "\"screen\":\"home\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "\"ack\":\"\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "password") == nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "psk") == nullptr);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"basic\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"basic\",\"ok\":1}\n", out);
+  TEST_ASSERT_TRUE(picked.profile == ServiceProfile::Basic);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"GET_STATE\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_TRUE(strstr(out, "\"profile\":\"basic\"") != nullptr);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"probe\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ERR\",\"reason\":\"unknown\"}\n", out);
+  n = submitWorld(session, world, "@R1 {\"v\":1,\"op\":\"ACTION\",\"name\":\"find\"}", out, static_cast<int>(sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("@R1 {\"v\":1,\"op\":\"ACTION_RESULT\",\"name\":\"find\",\"ok\":1}\n", out);
+}
+
 void test_resource_line_injected(void) {
   ResourceSample sample;
   sample.heap = 1000;
@@ -1785,6 +2034,8 @@ void setup() {
   RUN_TEST(test_remote_result_rows);
   RUN_TEST(test_networks_back_returns_home);
   RUN_TEST(test_remote_visual_ack_matches_touch_face);
+  RUN_TEST(test_dirty_regions_and_progress);
+  RUN_TEST(test_settings_and_service_profile);
   RUN_TEST(test_remote_action_busy_result);
   RUN_TEST(test_resource_line_injected);
   gFailures = UNITY_END();

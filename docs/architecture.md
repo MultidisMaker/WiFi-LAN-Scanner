@@ -1,6 +1,6 @@
 # WiFi LAN Scanner architecture
 
-This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, offline manufacturer enrichment, schema-1 CSV persistence for hosts that discovery already found, and USB Remote protocol v1 on that same action seam. Service enumeration and Wi-Fi Remote transport remain deferred.
+This firmware implements the hardware, Wi-Fi, UI, network-characterization, scanner-controller, bounded local host-discovery path, link-local hostname enrichment, offline manufacturer enrichment, schema-1 CSV persistence for hosts that discovery already found, and USB Remote protocol v1 on that same action seam. The scanner stores a Service Scan profile and can show it. TCP and UDP service probes are not implemented. Wi-Fi Remote transport remains deferred. See `docs/service-scan.md`.
 
 ## Hardware abstraction
 
@@ -56,7 +56,7 @@ Device builds set `WLS_OUI_EMBEDDED` and compile `src/OuiData.gen.inc` into flas
 
 ## UI / touch
 
-`src/ScannerUi.cpp` is a 222x480 portrait layout: Wi-Fi status, network list, on-device keyboard, network facts, and scanner controls. Password glyphs on screen are asterisks.
+`src/ScannerUi.cpp` is a 222x480 portrait layout: Wi-Fi status, network list, on-device keyboard, network facts, scanner controls, and a Settings screen. The home title is `WiFi-LAN-Scanner`. Hosts, Networks, Password, and Settings keep short screen names. Password glyphs on screen are asterisks. Home repaints dirty bands through one 222x160 PSRAM sprite instead of clearing the whole panel on a timer. Pause is shown while the scan is `SCANNING`, and Resume is shown while it is `PAUSED`. Stop stays available while a scan can be stopped. Reset is present when the scanner is idle or complete and uses a dimmer face so it does not compete with Start.
 
 Actionable controls share one geometry list (`collectUiControls` in `src/UiModel.cpp`), one painter, and one press tracker (`include/UiPress.h`). Host tests and the test-only HIL build call that same list. Touch-down paints that control immediately. Release inside the same control runs its action once. Sliding off before release cancels the action and restores the normal face. A tap shorter than 120 ms keeps the pressed face until 120 ms from touch-down so the acknowledgement stays visible. A USB Remote action that matches a control on the current screen paints that same pressed face for 120 ms before the action runs. The timer stays inside `loop()` and does not stall USB or the scan. A second action during that interval is rejected as busy. The Shift control stays filled while uppercase mode is on, and alphabet labels are an explicit `a-z`/`A-Z` map. `toupper` is not used. Serial logs on the password screen omit coordinates and key identity. See `docs/testing.md`.
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ScannerController.h"
+#include "ServiceProfile.h"
 #include "UiPress.h"
 
 enum UiControlId : int {
@@ -22,13 +23,17 @@ enum UiControlId : int {
   IdProgress,
   IdNewest,
   IdHosts,
+  IdSettings,
+  IdProfileBasic,
+  IdProfileCommon,
+  IdProfileDetailed,
   IdKeyBase = 100,
   // Rows used to sit in the sequential list, which made IdRow0 + 1 equal IdPrev.
   // Previous, Next, and Back then never ran. Keep rows in their own range.
   IdRow0 = 200
 };
 
-enum class UiPhase : uint8_t { Home, Results, Password, Hosts };
+enum class UiPhase : uint8_t { Home, Results, Password, Hosts, Settings };
 
 struct UiControl {
   int id;
@@ -41,6 +46,8 @@ struct UiControl {
   char vendor[32];
   char value;
   bool latched;
+  bool secondary;
+  bool dim;
 };
 
 struct UiSnapshot {
@@ -56,6 +63,7 @@ struct UiSnapshot {
   char newestLabel[22] = {};
   char newestDetail[40] = {};
   char newestVendor[32] = {};
+  ServiceProfile profile = ServiceProfile::Common;
   bool rowPresent[6] = {};
   char rowLabel[6][22] = {};
   char rowDetail[6][40] = {};

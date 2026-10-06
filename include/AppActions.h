@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "ScannerController.h"
+#include "ServiceProfile.h"
 #include "UiModel.h"
 
 // Logical actions shared by the touchscreen and USB Remote protocol v1.
@@ -25,19 +26,24 @@ enum class AppAction : uint8_t {
   Backspace,
   SubmitPassword,
   CancelPassword,
-  SelectRow
+  SelectRow,
+  OpenSettings,
+  SetProfile
 };
 
-enum class AppScreen : uint8_t { Home, Results, Entry, Hosts };
+enum class AppScreen : uint8_t { Home, Results, Entry, Hosts, Settings };
 
 struct AppView {
   bool showingHosts = false;
+  bool showingSettings = false;
   bool resultsOpen = false;
+  bool entryOpen = false;
   int page = 0;
   int keyboardPage = 0;
   int rowOffset = 0;
   int resultCount = 0;
   uint16_t observedCount = 0;
+  ServiceProfile profile = ServiceProfile::Common;
 };
 
 struct AppHooks {
@@ -49,6 +55,7 @@ struct AppHooks {
   void (*submitPassword)(void* context) = nullptr;
   void (*cancelPassword)(void* context) = nullptr;
   void (*closeResults)(void* context) = nullptr;
+  void (*setProfile)(void* context, int profileIndex) = nullptr;
   void* context = nullptr;
 };
 
@@ -83,6 +90,9 @@ struct AppState {
   bool canResume = false;
   // Control name while a Remote press is showing. Empty when none is showing.
   char ack[12] = {};
+  // Service Scan profile token. Not a credential. The diagnostic line omits it
+  // so the existing 240-byte HIL buffer stays large enough.
+  char profile[12] = {};
 };
 
 // Row ids 200..205 become SelectRow. Other known controls map to one action.
@@ -92,7 +102,8 @@ AppAction actionFromControl(int id, int* rowOffset);
 // One behavior implementation. Null Wi-Fi hooks skip those calls.
 void applyAppAction(AppAction action, AppView& view, ScannerController& scanner, const AppHooks* hooks);
 
-void fillAppState(AppState& out, const AppView& view, const ScannerController& scanner, const AppWifiView& wifi);
+void fillAppState(AppState& out, const AppView& view, const ScannerController& scanner, const AppWifiView& wifi,
+                  ServiceProfile profile = ServiceProfile::Common);
 
 // One diagnostic line. It has no passphrase field. Returns length, or -1.
 int formatAppStateLine(char* out, int cap, const AppState& state);

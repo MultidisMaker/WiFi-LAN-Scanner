@@ -32,6 +32,8 @@ const char* screenName(AppScreen screen) {
       return "entry";
     case AppScreen::Hosts:
       return "hosts";
+    case AppScreen::Settings:
+      return "settings";
     case AppScreen::Home:
       return "home";
   }
@@ -83,6 +85,23 @@ AppAction actionFromControl(int id, int* rowOffset) {
       return AppAction::ResetScan;
     case IdHosts:
       return AppAction::OpenHosts;
+    case IdSettings:
+      return AppAction::OpenSettings;
+    case IdProfileBasic:
+      if (rowOffset != nullptr) {
+        *rowOffset = 0;
+      }
+      return AppAction::SetProfile;
+    case IdProfileCommon:
+      if (rowOffset != nullptr) {
+        *rowOffset = 1;
+      }
+      return AppAction::SetProfile;
+    case IdProfileDetailed:
+      if (rowOffset != nullptr) {
+        *rowOffset = 2;
+      }
+      return AppAction::SetProfile;
     case IdBack:
       return AppAction::Back;
     case IdNext:
@@ -137,10 +156,28 @@ void applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
     case AppAction::OpenHosts:
       view.page = 0;
       view.showingHosts = true;
+      view.showingSettings = false;
+      break;
+    case AppAction::OpenSettings:
+      if (!view.resultsOpen && !view.entryOpen) {
+        view.page = 0;
+        view.showingHosts = false;
+        view.showingSettings = true;
+      }
+      break;
+    case AppAction::SetProfile:
+      if (view.rowOffset >= 0 && view.rowOffset <= 2) {
+        view.profile = static_cast<ServiceProfile>(view.rowOffset);
+        if (wifi != nullptr && wifi->setProfile != nullptr) {
+          wifi->setProfile(wifi->context, view.rowOffset);
+        }
+      }
       break;
     case AppAction::Back:
       view.page = 0;
-      if (view.showingHosts) {
+      if (view.showingSettings) {
+        view.showingSettings = false;
+      } else if (view.showingHosts) {
         view.showingHosts = false;
       } else if (view.resultsOpen) {
         if (wifi != nullptr) {
@@ -188,8 +225,8 @@ void applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
       }
       break;
     case AppAction::SelectRow:
-      if (!view.showingHosts && view.resultsOpen && view.rowOffset >= 0 && view.rowOffset < 6 && wifi != nullptr &&
-          wifi->selectResult != nullptr) {
+      if (!view.showingHosts && !view.showingSettings && view.resultsOpen && view.rowOffset >= 0 && view.rowOffset < 6 &&
+          wifi != nullptr && wifi->selectResult != nullptr) {
         wifi->selectResult(wifi->context, view.page * 6 + view.rowOffset);
       }
       break;
@@ -198,9 +235,12 @@ void applyAppAction(AppAction action, AppView& view, ScannerController& scanner,
   }
 }
 
-void fillAppState(AppState& out, const AppView& view, const ScannerController& scanner, const AppWifiView& wifi) {
+void fillAppState(AppState& out, const AppView& view, const ScannerController& scanner, const AppWifiView& wifi,
+                  ServiceProfile profile) {
   out = AppState();
-  if (view.showingHosts) {
+  if (view.showingSettings && !view.showingHosts && !view.entryOpen && !wifi.entry && !wifi.results && !view.resultsOpen) {
+    out.screen = AppScreen::Settings;
+  } else if (view.showingHosts) {
     out.screen = AppScreen::Hosts;
   } else if (wifi.entry) {
     out.screen = AppScreen::Entry;
@@ -235,6 +275,7 @@ void fillAppState(AppState& out, const AppView& view, const ScannerController& s
   out.canStart = state == ScanState::Idle || state == ScanState::Complete;
   out.canPause = state == ScanState::Scanning;
   out.canResume = state == ScanState::Paused;
+  copyToken(out.profile, sizeof(out.profile), serviceProfileToken(profile));
 }
 
 int formatAppStateLine(char* out, int cap, const AppState& state) {
